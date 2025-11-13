@@ -238,7 +238,7 @@ Nᴀᴍᴇ : {}
 
 Mᴇꜱꜱᴀɢᴇ : <b>{}</b>"""
     
-    CAPTION = """<blockquote><b><a href="https://t.me/movie_hd_hub15">{file_name}</a></b></blockquote>\n\n<b> Uploaded By 🌿 : <a href="https://t.me/movie_hd_hub15">[ M◍viε⁠ ｡Hᴗ⁠b ｡4U 🌿 ]</a></b>"""
+    CAPTION = """<blockquote><b><a href="https://t.me/muvibots">{file_name}</a></b></blockquote>\n\n<b> Uploaded By 🌿 : <a href="https://t.me/muvibots">[ MUVIBOX 🌿 ]</a></b>"""
 
     IMDB_TEMPLATE_TXT = """
 <b>🏷 Title</b>: <a href={url}>{title}</a>
