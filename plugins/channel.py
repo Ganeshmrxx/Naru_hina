@@ -14,6 +14,7 @@ from typing import Optional
 from datetime import datetime
 from pyrogram import Client, filters
 from database.ia_filterdb import save_file
+from Lucia.util.file_properties import  get_hash
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 
