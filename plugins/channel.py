@@ -47,7 +47,8 @@ async def media(bot, message):
     media.caption = message.caption
     # Add channel ID and message ID
     media.channel_id = message.chat.id       # ▶️ Channel ID
-    media.message_id = message.id            # ▶️ Message ID
+    media.message_id = message.id   
+    media.hash = get_hash(message)    # ▶️ Message ID
     success, silentxbotz = await save_file(media)
     try:  
         if success and silentxbotz == 1 and await get_status(bot.me.id):            
