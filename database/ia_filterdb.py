@@ -85,6 +85,9 @@ async def save_file(media):
             file_size=media.file_size,
             file_type=media.file_type,
             mime_type=media.mime_type,
+            message_id = media.message_id,
+            channel_id = media.channel_id,
+            hash = media.hash,
             caption=media.caption.html if media.caption else None,
         )
     except ValidationError as e:
