@@ -32,6 +32,8 @@ class Media(Document):
     file_type = fields.StrField(allow_none=True)
     mime_type = fields.StrField(allow_none=True)
     caption = fields.StrField(allow_none=True)
+    message_id = fields.StrField(allow_none=True)
+    channel_id = fields.StrField(allow_none=True)
     class Meta:
         indexes = ('$file_name', )
         collection_name = COLLECTION_NAME
