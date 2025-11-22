@@ -160,7 +160,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
         await asyncio.sleep(1.5)
 
     # After all long videos are sent to BIN, send the photos with buttons
-    await client.processing_msg.delete()
+    await processing_msg.delete()
     print(photo_queue)
     for item in photo_queue:
         try:
