@@ -53,6 +53,7 @@ CATEGORY_CHANNELS = {
     "others": -1003448971681
 }
 
+
 def get_offset(chat_id, category):
     entry = xpages.find_one({"chat_id": chat_id, "category": category})
     if entry:
@@ -71,100 +72,117 @@ def update_offset(chat_id, category, new_offset):
 
 
 async def send_10_photos_and_videos(client, chat_id, category):
-    processing_msg = await client.send_message(chat_id, "⏳ Processing your request... 10secs")
-    channel_id = CATEGORY_CHANNELS[category]
-    offset_photos = get_offset(chat_id, f"{category}_photo")
-    offset_videos = get_offset(chat_id, f"{category}_video")
+    try:
+        processing_msg = await client.send_message(chat_id, "⏳ Processing your request... 10secs")
+        print("processing message sent")
 
-    # Fetch 10 photos and 10 videos separately
-    photos = list(
-        xchannels.find(
-            {"channel_id": channel_id, "media_type": "photo"},
-            limit=10,
-            skip=offset_photos
-        )
-    )
-    videos = list(
-        xchannels.find(
-            {"channel_id": channel_id, "media_type": "video"},
-            limit=10,
-            skip=offset_videos
-        )
-    )
+        channel_id = CATEGORY_CHANNELS[category]
+        print("channel id =", channel_id)
 
-    print(videos)
-    print(photos)
+        offset_photos = get_offset(chat_id, f"{category}_photo")
+        offset_videos = get_offset(chat_id, f"{category}_video")
 
-    # If less than 10, restart offset
-    if len(photos) == 0:
-        offset_photos = 0
-        update_offset(chat_id, f"{category}_photo", 0)
+        print("Offsets =", offset_photos, offset_videos)
+
+        # Fetch data
+        # Fetch 10 photos and 10 videos separately
         photos = list(
             xchannels.find(
                 {"channel_id": channel_id, "media_type": "photo"},
                 limit=10,
-                skip=0
+                skip=offset_photos
             )
         )
-
-    if len(videos) == 0:
-        offset_videos = 0
-        update_offset(chat_id, f"{category}_video", 0)
         videos = list(
             xchannels.find(
                 {"channel_id": channel_id, "media_type": "video"},
                 limit=10,
-                skip=0
+                skip=offset_videos
             )
         )
+        print("Fetched counts:")
 
-    # Interleave and send
-    # Hold data for later photo sending
-    photo_queue = []
+        print(videos)
+        print(photos)
 
-    # Interleave videos and photos
-    for video_item, photo_item in zip(videos, photos):
-        try:
-            video_msg_id = video_item["message_id"]
-            duration = video_item.get("duration", 0)
-            file_size = video_item.get("file_size", 0)
+        # If less than 10, restart offset
+        if len(photos) == 0:
+            offset_photos = 0
+            update_offset(chat_id, f"{category}_photo", 0)
+            photos = list(
+                xchannels.find(
+                    {"channel_id": channel_id, "media_type": "photo"},
+                    limit=10,
+                    skip=0
+                )
+            )
 
-            photo_msg_id = photo_item["message_id"]
+        if len(videos) == 0:
+            offset_videos = 0
+            update_offset(chat_id, f"{category}_video", 0)
+            videos = list(
+                xchannels.find(
+                    {"channel_id": channel_id, "media_type": "video"},
+                    limit=10,
+                    skip=0
+                )
+            )
 
-            if duration < 120 or file_size < 5_000_000:
-                # Short video → send directly
-                await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id,
-                                          caption="X")
-                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
-                                          caption="X")
-            else:
-                # Long video → send to BIN
-                safe_from = abs(channel_id)  # always positive for Telegram
-               
-    
-                silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=safe_from,
-                                                       message_id=video_msg_id)
 
-                raw_name = get_name(silent_msg) or "file.mp4"
-                raw_name = raw_name[:50]     # avoid huge filenames
-                fileName = quote_plus(raw_name)
-                
-                silent_stream = f"{URL}watch/{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
-                silent_download = f"{URL}{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
 
-                # Store photo_id + buttons for later
-                photo_queue.append({
-                    "photo_id": photo_msg_id,
-                    "buttons": [
-                        [InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
-                         InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽", url=silent_download)]
-                    ]
-                })
+        # DEBUG PRINT BEFORE LOOP
+        print("Entering zip loop...")
 
-        except Exception as e:
-            print("Send error:", e)
+        photo_queue = []
 
-        await asyncio.sleep(1.5)
+        for video_item, photo_item in zip(videos, photos):
+            print("Loop iteration hit")  # <-- this is IMPORTANT
+            try:
+                video_msg_id = video_item["message_id"]
+                duration = video_item.get("duration", 0)
+                file_size = video_item.get("file_size", 0)
+
+                photo_msg_id = photo_item["message_id"]
+
+                if duration < 120 or file_size < 5_000_000:
+                    # Short video → send directly
+                    await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id,
+                                              caption="X")
+                    await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
+                                              caption="X")
+                else:
+                    # Long video → send to BIN
+                    safe_from = abs(channel_id)  # always positive for Telegram
+
+                    silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=safe_from,
+                                                           message_id=video_msg_id)
+
+                    raw_name = get_name(silent_msg) or "file.mp4"
+                    raw_name = raw_name[:50]  # avoid huge filenames
+                    fileName = quote_plus(raw_name)
+
+                    silent_stream = f"{URL}watch/{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
+                    silent_download = f"{URL}{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
+
+                    # Store photo_id + buttons for later
+                    photo_queue.append({
+                        "photo_id": photo_msg_id,
+                        "buttons": [
+                            [InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
+                             InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽", url=silent_download)]
+                        ]
+                    })
+                pass
+            except Exception as e:
+                print("Send error:", e)
+
+        print("Loop finished")
+
+        await processing_msg.delete()
+        print("processing msg deleted")
+
+    except Exception as main_error:
+        print("FUNCTION CRASHED:", main_error)
 
     # After all long videos are sent to BIN, send the photos with buttons
     await processing_msg.delete()
@@ -188,6 +206,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
     update_offset(chat_id, f"{category}_video", offset_videos + len(videos))
 
     print(f"Offsets saved: photos={offset_photos + len(photos)}, videos={offset_videos + len(videos)}")
+
 
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client, message):
