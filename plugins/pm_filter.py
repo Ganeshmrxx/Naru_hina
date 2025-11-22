@@ -71,6 +71,7 @@ def update_offset(chat_id, category, new_offset):
 
 
 async def send_10_photos_and_videos(client, chat_id, category):
+    processing_msg = await client.send_message(chat_id, "⏳ Processing your request... 10secs")
     channel_id = CATEGORY_CHANNELS[category]
     offset_photos = get_offset(chat_id, f"{category}_photo")
     offset_videos = get_offset(chat_id, f"{category}_video")
@@ -129,7 +130,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
             photo_msg_id = photo_item["message_id"]
 
-            if duration < 60 or file_size < 2_000_000:
+            if duration < 120 or file_size < 5_000_000:
                 # Short video → send directly
                 await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id,
                                           caption="X")
@@ -156,9 +157,10 @@ async def send_10_photos_and_videos(client, chat_id, category):
         except Exception as e:
             print("Send error:", e)
 
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(1.5)
 
     # After all long videos are sent to BIN, send the photos with buttons
+    await client.processing_msg.delete()
     print(photo_queue)
     for item in photo_queue:
         try:
@@ -166,12 +168,13 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 chat_id=chat_id,
                 from_chat_id=channel_id,
                 message_id=item["photo_id"],
+                caption="X",
                 reply_markup=InlineKeyboardMarkup(item["buttons"])
             )
         except Exception as e:
             print("Photo send error:", e)
 
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(1.5)
 
     # Update offsets for next batch
     update_offset(chat_id, f"{category}_photo", offset_photos + len(photos))
@@ -988,6 +991,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
     if datax in valid_categories:
         await query.answer()  # remove "loading" spinner
         # Call your function to send 10 photos and videos
+        await query.message.delete()
         await send_10_photos_and_videos(client, chat_id, datax)
         return  # stop further processing for this callback
     lazyData = query.data
