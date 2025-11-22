@@ -142,7 +142,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=channel_id,
                                                        message_id=video_msg_id)
 
-                name = get_name(silent_msg) or "file.mp4"
+                name = quote_plus(get_name(silent_msg)) or "file.mp4" 
                 name = name[:10]   # prevent super long filenames
                 fileName = quote_plus(name)
                 
