@@ -142,7 +142,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
                     ]]
 
                     silent_msg = await client.copy_message(
-                        chat_id=chat_id,
+                        chat_id=BIN_CHANNEL,
                         from_chat_id=channel_id,
                         message_id=msg_id
 
