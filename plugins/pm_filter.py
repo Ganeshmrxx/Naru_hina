@@ -174,7 +174,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
     update_offset(chat_id, f"{category}_video", offset_videos + len(videos))
 
     print(f"Offsets saved: photos={offset_photos + len(photos)}, videos={offset_videos + len(videos)}")
-    
+
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client, message):
     bot_id = client.me.id
@@ -209,7 +209,7 @@ async def give_filter(client, message):
             "Which one you want?",
             reply_markup=keyboard
         )
-        return 
+        return
     if message.chat.id != SUPPORT_CHAT_ID:
         settings = await get_settings(message.chat.id)
         if settings['auto_ffilter']:
@@ -974,17 +974,17 @@ async def advantage_spoll_choker(bot, query):
 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):
-    data = query.data
+    datax = query.data
     chat_id = query.message.chat.id
 
     # List of valid categories
     valid_categories = ["x_eng", "x_hin", "x_mix", "others"]
 
     # 1️⃣ Handle category buttons
-    if data in valid_categories:
+    if datax in valid_categories:
         await query.answer()  # remove "loading" spinner
         # Call your function to send 10 photos and videos
-        await send_10_photos_and_videos(client, chat_id, data)
+        await send_10_photos_and_videos(client, chat_id, datax)
         return  # stop further processing for this callback
     lazyData = query.data
     try:
