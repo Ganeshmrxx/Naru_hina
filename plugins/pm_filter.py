@@ -91,6 +91,8 @@ async def send_10_photos_and_videos(client, chat_id, category):
         )
     )
 
+    print(photos, videos)
+
     # If less than 10, restart offset
     if len(photos) == 0:
         offset_photos = 0
@@ -115,6 +117,10 @@ async def send_10_photos_and_videos(client, chat_id, category):
         )
 
     # Interleave and send
+    # Hold data for later photo sending
+    photo_queue = []
+
+    # Interleave videos and photos
     for video_item, photo_item in zip(videos, photos):
         try:
             video_msg_id = video_item["message_id"]
@@ -125,8 +131,10 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
             if duration < 60 or file_size < 2_000_000:
                 # Short video → send directly
-                await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id,caption="X")
-                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,caption="X")
+                await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id,
+                                          caption="X")
+                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
+                                          caption="X")
             else:
                 # Long video → send to BIN
                 silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=channel_id,
@@ -136,17 +144,32 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 silent_stream = f"{URL}watch/{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
                 silent_download = f"{URL}{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
 
-                btn = [[
-                    InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
-                    InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽", url=silent_download)
-                ]]
-
-                # Send photo linked to the BIN video
-                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,caption="X",
-                                          reply_markup=InlineKeyboardMarkup(btn))
+                # Store photo_id + buttons for later
+                photo_queue.append({
+                    "photo_id": photo_msg_id,
+                    "buttons": [
+                        [InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
+                         InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽", url=silent_download)]
+                    ]
+                })
 
         except Exception as e:
             print("Send error:", e)
+
+        await asyncio.sleep(1.2)
+
+    # After all long videos are sent to BIN, send the photos with buttons
+    print(photo_queue)
+    for item in photo_queue:
+        try:
+            await client.copy_message(
+                chat_id=chat_id,
+                from_chat_id=channel_id,
+                message_id=item["photo_id"],
+                reply_markup=InlineKeyboardMarkup(item["buttons"])
+            )
+        except Exception as e:
+            print("Photo send error:", e)
 
         await asyncio.sleep(1.2)
 
