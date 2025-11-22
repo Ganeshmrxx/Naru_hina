@@ -146,15 +146,15 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
                 if duration < 120 or file_size < 5_000_000:
                     # Short video → send directly
-                    await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id,
+                    await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=video_msg_id,
                                               caption="X")
                     await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
                                               caption="X")
                 else:
                     # Long video → send to BIN
-                    safe_from = abs(channel_id)  # always positive for Telegram
+                    # always positive for Telegram
 
-                    silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=safe_from,
+                    silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=channel_id,
                                                            message_id=video_msg_id)
 
                     raw_name = get_name(silent_msg) or "file.mp4"
