@@ -116,52 +116,51 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
     # Interleave and send
     for i in range(max(len(photos), len(videos))):
-
-        # Send video if exists
+        # Video and photo items
         if i < len(videos):
             video_item = videos[i]
-            photo_item = photos[i]
+            video_msg_id = video_item["message_id"]
             duration = video_item.get("duration", 0)
             file_size = video_item.get("file_size", 0)
-            msg_id = video_item["message_id"]
-            phot_id = photo_item["message_id"]
+
+            # Corresponding photo (if exists)
+            photo_item = photos[i] if i < len(photos) else None
+            photo_msg_id = photo_item["message_id"] if photo_item else None
 
             try:
+                # Short / small video → send directly
                 if duration < 60 or file_size < 2_000_000:
                     await client.copy_message(
                         chat_id=chat_id,
                         from_chat_id=-channel_id,
-                        message_id=msg_id
+                        message_id=video_msg_id
                     )
+                    
                 else:
-
+                    # Long video → send to BIN_CHANNEL
                     silent_msg = await client.copy_message(
                         chat_id=BIN_CHANNEL,
                         from_chat_id=channel_id,
-                        message_id=msg_id
-
+                        message_id=video_msg_id
                     )
-                    fileName = {quote_plus(get_name(silent_msg))}
-                    silent_stream = f"{URL}watch/{str(silent_msg.id)}/{quote_plus(get_name(silent_msg))}?hash={get_hash(silent_msg)}"
-                    silent_download = f"{URL}{str(silent_msg.id)}/{quote_plus(get_name(silent_msg))}?hash={get_hash(silent_msg)}"
+
+                    fileName = quote_plus(get_name(silent_msg))
+                    silent_stream = f"{URL}watch/{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
+                    silent_download = f"{URL}{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
+
                     btn = [[
                         InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
-                        InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
-                                             url=silent_download)
+                        InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽", url=silent_download)
                     ]]
-                    await asyncio.sleep(1.2)
-                    try:
-                        silent_msgx = await client.copy_message(
+
+                    # Send corresponding photo with buttons
+                    if photo_msg_id:
+                        await client.copy_message(
                             chat_id=chat_id,
                             from_chat_id=channel_id,
-                            message_id=phot_id,
+                            message_id=photo_msg_id,
                             reply_markup=InlineKeyboardMarkup(btn)
-
                         )
-                    except Exception as e:
-                        LOGGER.error(f"An XX: {str(e)}")
-
-
 
             except Exception as e:
                 print("Video send error:", e)
