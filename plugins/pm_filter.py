@@ -150,14 +150,17 @@ async def send_10_photos_and_videos(client, chat_id, category):
                                              url=silent_download)
                     ]]
                     await asyncio.sleep(1.2)
+                    try:
+                        silent_msgx = await client.copy_message(
+                            chat_id=chat_id,
+                            from_chat_id=channel_id,
+                            message_id=phot_id,
+                            reply_markup=InlineKeyboardMarkup(btn)
 
-                    silent_msgx = await client.copy_message(
-                        chat_id=chat_id,
-                        from_chat_id=channel_id,
-                        message_id=phot_id,
-                        reply_markup=InlineKeyboardMarkup(btn)
+                        )
+                    except Exception as e:
+                        LOGGER.error(f"An XX: {str(e)}")
 
-                    )
 
 
             except Exception as e:
