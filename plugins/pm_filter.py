@@ -120,10 +120,11 @@ async def send_10_photos_and_videos(client, chat_id, category):
         # Send video if exists
         if i < len(videos):
             video_item = videos[i]
+            photo_item = photos[i]
             duration = video_item.get("duration", 0)
             file_size = video_item.get("file_size", 0)
             msg_id = video_item["message_id"]
-            phot_id = photos[i]["message_id"]
+            phot_id = photo_item["message_id"]
 
             try:
                 if duration < 60 or file_size < 2_000_000:
@@ -133,13 +134,6 @@ async def send_10_photos_and_videos(client, chat_id, category):
                         message_id=msg_id
                     )
                 else:
-                    # Handle long video with thumbnail + buttons
-
-                    btn = [[
-                        InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url="https://www.goog.com"),
-                        InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
-                                             url=f"https://t.me/ipapkorn_v1_bot?start=filex_{channel_id}_{msg_id}")
-                    ]]
 
                     silent_msg = await client.copy_message(
                         chat_id=BIN_CHANNEL,
@@ -155,6 +149,8 @@ async def send_10_photos_and_videos(client, chat_id, category):
                         InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
                                              url=silent_download)
                     ]]
+                    await asyncio.sleep(1.2)
+
                     silent_msgx = await client.copy_message(
                         chat_id=chat_id,
                         from_chat_id=channel_id,
