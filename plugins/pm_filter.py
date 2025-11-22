@@ -125,8 +125,8 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
             if duration < 60 or file_size < 2_000_000:
                 # Short video → send directly
-                await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id)
-                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id)
+                await client.copy_message(chat_id=chat_id, from_chat_id=-channel_id, message_id=video_msg_id,caption="X")
+                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,,caption="X")
             else:
                 # Long video → send to BIN
                 silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=channel_id,
@@ -142,7 +142,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 ]]
 
                 # Send photo linked to the BIN video
-                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
+                await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,,caption="X",
                                           reply_markup=InlineKeyboardMarkup(btn))
 
         except Exception as e:
