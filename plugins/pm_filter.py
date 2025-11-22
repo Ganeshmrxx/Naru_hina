@@ -47,10 +47,10 @@ xchannels = dbx["xData"]
 xpages = dbx["xpages"]
 
 CATEGORY_CHANNELS = {
-    "x_eng": -1003448971681,
-    "x_hin": -1003448971681,
-    "x_mix": -1003448971681,
-    "others": -1003448971681
+    "x_eng": "-1003448971681",
+    "x_hin": "-1003448971681",
+    "x_mix": "-1003448971681",
+    "others": "-1003448971681"
 }
 
 def get_offset(chat_id, category):
@@ -92,7 +92,8 @@ async def send_10_photos_and_videos(client, chat_id, category):
         )
     )
 
-    print(photos, videos)
+    print(videos)
+    print(photos)
 
     # If less than 10, restart offset
     if len(photos) == 0:
@@ -141,7 +142,10 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 silent_msg = await client.copy_message(chat_id=BIN_CHANNEL, from_chat_id=channel_id,
                                                        message_id=video_msg_id)
 
-                fileName = quote_plus(get_name(silent_msg))
+                name = get_name(silent_msg) or "file.mp4"
+                name = name[:10]   # prevent super long filenames
+                fileName = quote_plus(name)
+                
                 silent_stream = f"{URL}watch/{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
                 silent_download = f"{URL}{silent_msg.id}/{fileName}?hash={get_hash(silent_msg)}"
 
