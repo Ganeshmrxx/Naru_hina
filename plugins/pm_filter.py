@@ -90,22 +90,24 @@ async def delete_after_delay(client, chat_id, messages):
     for mid in messages:
         try:
             await client.delete_messages(chat_id, mid)
-            processing_msg = await client.send_message(
-                chat_id,
-                "⏳ Successfully Files Deleted for Copyright",
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "Movies ? Webseries Search here 🔗",
-                                url="https://t.me/ipapkorn_pro"
-                            )
-                        ]
-                    ]
-                )
-            )
+            
         except:
             pass
+
+    processing_msg = await client.send_message(
+        chat_id,
+        "⏳ Successfully Files Deleted for Copyright",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Movies ? Webseries Search here 🔗",
+                        url="https://t.me/ipapkorn_pro"
+                    )
+                ]
+            ]
+        )
+    )
 async def send_10_photos_and_videos(client, chat_id, category):
     try:
         processing_msg = await client.send_message(chat_id, "⏳ Processing your request... 10secs")
@@ -256,7 +258,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
         )
     )
     sent_msgs.append(processing_msg.id)
-    delete_after_delay(client, chat_id, sent_msgs)
+    await delete_after_delay(client, chat_id, sent_msgs)
 
 
     print(f"Offsets saved: photos={offset_photos + len(photos)}, videos={offset_videos + len(videos)}")
