@@ -60,13 +60,13 @@ CATEGORY_CHANNELS = {
 # -1002430682750 = exotic  = group others
 
 TARGET_CHANNELS = [
-        -1002430682750,
-        -1003362174338,
-        -1003499508490,
-        -1002237246037,
-        -1003292872979
+    -1002430682750,
+    -1003362174338,
+    -1003499508490,
+    -1002237246037,
+    -1003292872979
 
-    ]
+]
 
 
 def get_offset(chat_id, category):
@@ -85,32 +85,40 @@ def update_offset(chat_id, category, new_offset):
         upsert=True
     )
 
-async def delete_after_delay(client, chat_id, messages):
+
+async def delete_after_delay(client, chat_id, messages, pid):
     await asyncio.sleep(600)  # 10 minutes = 600 seconds
     for mid in messages:
         try:
             await client.delete_messages(chat_id, mid)
-            
+
         except:
             pass
 
-    processing_msg = await client.send_message(
+    processing_msg = await client.edit_message_text(
         chat_id,
-        "⏳ Successfully Files Deleted for Copyright",
+        message_id=pid,
+        text = "⏳ Files Deleted for Copyright",
         reply_markup=InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        "Movies ? Webseries Search here 🔗",
+                        "Movies ? Webseries 🔗",
                         url="https://t.me/ipapkorn_pro"
                     )
                 ]
             ]
         )
     )
+
+
 async def send_10_photos_and_videos(client, chat_id, category):
+    sent_msgs = []
+    prid = None
     try:
+         # store all sent message IDs
         processing_msg = await client.send_message(chat_id, "⏳ Processing your request... 10secs")
+        prid = processing_msg.id
         print("processing message sent")
 
         channel_id = CATEGORY_CHANNELS[category]
@@ -165,12 +173,11 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 )
             )
 
-
-
         # DEBUG PRINT BEFORE LOOP
         print("Entering zip loop...")
 
         photo_queue = []
+
 
         for video_item, photo_item in zip(videos, photos):
             print("Loop iteration hit")  # <-- this is IMPORTANT
@@ -183,10 +190,12 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
                 if duration < 120 or file_size < 5_000_000:
                     # Short video → send directly
-                    await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=video_msg_id,
+                    sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=video_msg_id,
                                               caption="X")
-                    await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
+                    sent_msgs.append(sent.id)  # save message id
+                    sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
                                               caption="X")
+                    sent_msgs.append(sent.id)  # save message id
                 else:
                     # Long video → send to BIN
                     # always positive for Telegram
@@ -214,17 +223,15 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 print("Send error:", e)
 
         print("Loop finished")
+        await processing_msg.edit_text("Below Your Videos , Dekho or hilao")
 
-        await processing_msg.delete()
-        print("processing msg deleted")
 
     except Exception as main_error:
         print("FUNCTION CRASHED:", main_error)
 
     # After all long videos are sent to BIN, send the photos with buttons
-    await processing_msg.delete()
     print(photo_queue)
-    sent_msgs = []  # store all sent message IDs
+
     for item in photo_queue:
         try:
             sent = await client.copy_message(
@@ -243,7 +250,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
     # Update offsets for next batch
     update_offset(chat_id, f"{category}_photo", offset_photos + len(photos))
     update_offset(chat_id, f"{category}_video", offset_videos + len(videos))
-    processing_msg = await client.send_message(
+    processing_msgs = await client.send_message(
         chat_id,
         "⏳ For Movies and Webseries",
         reply_markup=InlineKeyboardMarkup(
@@ -257,9 +264,9 @@ async def send_10_photos_and_videos(client, chat_id, category):
             ]
         )
     )
-    sent_msgs.append(processing_msg.id)
-    await delete_after_delay(client, chat_id, sent_msgs)
+    sent_msgs.append(processing_msgs.id)
 
+    await delete_after_delay(client, chat_id, sent_msgs, prid)
 
     print(f"Offsets saved: photos={offset_photos + len(photos)}, videos={offset_videos + len(videos)}")
 
@@ -278,7 +285,6 @@ async def give_filter(client, message):
                                  disable_web_page_preview=True)
         return
     await silentdb.update_top_messages(message.from_user.id, message.text)
-
 
     if message.chat.id in TARGET_CHANNELS:
         print("Is 1212")
