@@ -48,10 +48,18 @@ xpages = dbx["xpages"]
 
 CATEGORY_CHANNELS = {
     "x_eng": -1003448971681,
-    "x_hin": -1003448971681,
-    "x_mix": -1003448971681,
-    "others": -1003448971681
+    "x_hin": -1003440613424,
+    "x_mix": -1003253102275,
+    "others": -1003356903981
 }
+
+TARGET_CHANNELS = [
+        -1003362174338,
+        -1005054486007,
+        -1002237246037,
+        -1003292872979
+    
+    ]
 
 
 def get_offset(chat_id, category):
@@ -204,6 +212,21 @@ async def send_10_photos_and_videos(client, chat_id, category):
     # Update offsets for next batch
     update_offset(chat_id, f"{category}_photo", offset_photos + len(photos))
     update_offset(chat_id, f"{category}_video", offset_videos + len(videos))
+    processing_msg = await client.send_message(
+        chat_id,
+        "⏳ For Movies and Webseries",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Search here 🔗",
+                        url="https://t.me/ipapkorn_pro"
+                    )
+                ]
+            ]
+        )
+    )
+
 
     print(f"Offsets saved: photos={offset_photos + len(photos)}, videos={offset_videos + len(videos)}")
 
@@ -222,7 +245,9 @@ async def give_filter(client, message):
                                  disable_web_page_preview=True)
         return
     await silentdb.update_top_messages(message.from_user.id, message.text)
-    if message.chat.id == -1003362174338:
+
+
+    if message.chat.id in TARGET_CHANNELS:
         print("Is 1212")
 
         # Create buttons
@@ -239,7 +264,8 @@ async def give_filter(client, message):
 
         # Send message with buttons
         await message.reply_text(
-            "Which one you want?",
+            "Which one do you want?",
+
             reply_markup=keyboard
         )
         return
@@ -1608,6 +1634,23 @@ async def cb_handler(client: Client, query: CallbackQuery):
                                      url=f"https://t.me/ipapkorn_v1_bot?start=file_{query.message.chat.id}_{file_id}")
             ]]
             await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup(btn)
+            )
+            btn = [
+                [
+                    InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
+                    InlineKeyboardButton(
+                        "𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
+                        url=f"https://t.me/ipapkorn_v1_bot?start=file_{query.message.chat.id}_{file_id}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton("For 18+ Videos", url="https://t.me/+7poxvc56OO1jNTA1")
+                ]
+            ]
+
+            await query.edit_message_text(
+                "⭐ *Your File Below*",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
             await silent_msg.reply_text(
