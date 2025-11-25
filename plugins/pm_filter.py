@@ -52,13 +52,20 @@ CATEGORY_CHANNELS = {
     "x_mix": -1003253102275,
     "others": -1003356903981
 }
+# -1003362174338 = x testing only = group
+# -1003499508490 = x fun only = group
+# -1003292872979 = XFun fun = group backup
+
+# -1002237246037 = All fun = group others
+# -1002430682750 = exotic  = group others
 
 TARGET_CHANNELS = [
+        -1002430682750,
         -1003362174338,
-        -1005054486007,
+        -1003499508490,
         -1002237246037,
         -1003292872979
-    
+
     ]
 
 
