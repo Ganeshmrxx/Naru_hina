@@ -85,7 +85,27 @@ def update_offset(chat_id, category, new_offset):
         upsert=True
     )
 
-
+async def delete_after_delay(client, chat_id, messages):
+    await asyncio.sleep(600)  # 10 minutes = 600 seconds
+    for mid in messages:
+        try:
+            await client.delete_messages(chat_id, mid)
+            processing_msg = await client.send_message(
+                chat_id,
+                "⏳ Successfully Files Deleted for Copyright",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "Movies ? Webseries Search here 🔗",
+                                url="https://t.me/ipapkorn_pro"
+                            )
+                        ]
+                    ]
+                )
+            )
+        except:
+            pass
 async def send_10_photos_and_videos(client, chat_id, category):
     try:
         processing_msg = await client.send_message(chat_id, "⏳ Processing your request... 10secs")
@@ -104,14 +124,14 @@ async def send_10_photos_and_videos(client, chat_id, category):
         photos = list(
             xchannels.find(
                 {"channel_id": channel_id, "media_type": "photo"},
-                limit=10,
+                limit=5,
                 skip=offset_photos
             )
         )
         videos = list(
             xchannels.find(
                 {"channel_id": channel_id, "media_type": "video"},
-                limit=10,
+                limit=5,
                 skip=offset_videos
             )
         )
@@ -127,7 +147,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
             photos = list(
                 xchannels.find(
                     {"channel_id": channel_id, "media_type": "photo"},
-                    limit=10,
+                    limit=5,
                     skip=0
                 )
             )
@@ -138,7 +158,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
             videos = list(
                 xchannels.find(
                     {"channel_id": channel_id, "media_type": "video"},
-                    limit=10,
+                    limit=5,
                     skip=0
                 )
             )
@@ -202,15 +222,17 @@ async def send_10_photos_and_videos(client, chat_id, category):
     # After all long videos are sent to BIN, send the photos with buttons
     await processing_msg.delete()
     print(photo_queue)
+    sent_msgs = []  # store all sent message IDs
     for item in photo_queue:
         try:
-            await client.copy_message(
+            sent = await client.copy_message(
                 chat_id=chat_id,
                 from_chat_id=channel_id,
                 message_id=item["photo_id"],
                 caption="X",
                 reply_markup=InlineKeyboardMarkup(item["buttons"])
             )
+            sent_msgs.append(sent.id)  # save message id
         except Exception as e:
             print("Photo send error:", e)
 
@@ -233,6 +255,8 @@ async def send_10_photos_and_videos(client, chat_id, category):
             ]
         )
     )
+    sent_msgs.append(processing_msg.id)
+    delete_after_delay(client, chat_id, sent_msgs)
 
 
     print(f"Offsets saved: photos={offset_photos + len(photos)}, videos={offset_videos + len(videos)}")
