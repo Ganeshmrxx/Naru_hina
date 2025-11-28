@@ -198,11 +198,11 @@ async def send_10_photos_and_videos(client, chat_id, category):
                     sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=video_msg_id,
                                               caption="")
                     sent_msgs.append(sent.id)  # save message id
-"""
+                    """
                     sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
                                               caption="X")
                     sent_msgs.append(sent.id)  # save message id
-"""
+                    """
                 else:
                     # Long video → send to BIN
                     # always positive for Telegram
@@ -238,6 +238,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
     # After all long videos are sent to BIN, send the photos with buttons
     print(photo_queue)
+    """
 
     for item in photo_queue:
         try:
@@ -253,6 +254,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
             print("Photo send error:", e)
 
         await asyncio.sleep(1.5)
+    """
 
     # Update offsets for next batch
     update_offset(chat_id, f"{category}_photo", offset_photos + len(photos))
