@@ -98,12 +98,12 @@ async def delete_after_delay(client, chat_id, messages, pid):
     processing_msg = await client.edit_message_text(
         chat_id,
         message_id=pid,
-        text = "⏳ Files Deleted for Copyright",
+        text = "⏳ Files Deleted | Hila liya hoga 💦💦",
         reply_markup=InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        "Movies ? Webseries 🔗",
+                        "Movies / Webseries 🔗",
                         url="https://t.me/ipapkorn_pro"
                     )
                 ]
@@ -140,7 +140,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
         )
         videos = list(
             xchannels.find(
-                {"channel_id": channel_id, "media_type": "video"},
+                {"channel_id": channel_id},
                 limit=5,
                 skip=offset_videos
             )
@@ -167,7 +167,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
             update_offset(chat_id, f"{category}_video", 0)
             videos = list(
                 xchannels.find(
-                    {"channel_id": channel_id, "media_type": "video"},
+                    {"channel_id": channel_id},
                     limit=5,
                     skip=0
                 )
@@ -188,7 +188,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
                 photo_msg_id = photo_item["message_id"]
 
-                if duration < 120 or file_size < 5_000_000:
+                if duration < 120000000000000000000 or file_size < 100_000_000:
                     # Short video → send directly
                     sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=video_msg_id,
                                               caption="X")
