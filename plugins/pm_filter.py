@@ -196,11 +196,13 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 if duration < 120000000000000000000 or file_size < 100_000_000:
                     # Short video → send directly
                     sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=video_msg_id,
-                                              caption="X")
+                                              caption="")
                     sent_msgs.append(sent.id)  # save message id
+"""
                     sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
                                               caption="X")
                     sent_msgs.append(sent.id)  # save message id
+"""
                 else:
                     # Long video → send to BIN
                     # always positive for Telegram
