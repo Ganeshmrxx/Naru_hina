@@ -260,6 +260,11 @@ async def send_10_photos_and_videos(client, chat_id, category):
                         "Search here 🔗",
                         url="https://t.me/ipapkorn_pro"
                     )
+                ],[
+                    InlineKeyboardButton(
+                         "BackUp Channel🔗",
+                        url="https://t.me/ipapkorn_pro"
+                    )
                 ]
             ]
         )
