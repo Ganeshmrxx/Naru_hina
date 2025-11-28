@@ -106,6 +106,11 @@ async def delete_after_delay(client, chat_id, messages, pid):
                         "Movies / Webseries 🔗",
                         url="https://t.me/ipapkorn_pro"
                     )
+                ],[
+                    InlineKeyboardButton(
+                        "BackUp Channel 🔗",
+                        url="https://t.me/muvibots"
+                    )
                 ]
             ]
         )
@@ -257,12 +262,12 @@ async def send_10_photos_and_videos(client, chat_id, category):
             [
                 [
                     InlineKeyboardButton(
-                        "Search here 🔗",
-                        url="https://t.me/ipapkorn_pro"
+                        "BackUp Channel 🔗",
+                        url="https://t.me/muvibots"
                     )
                 ],[
                     InlineKeyboardButton(
-                         "BackUp Channel🔗",
+                         "Search Here 🔗",
                         url="https://t.me/ipapkorn_pro"
                     )
                 ]
