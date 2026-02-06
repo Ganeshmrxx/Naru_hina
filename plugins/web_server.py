@@ -45,7 +45,7 @@ async def streamfile_api(request):
 
 async def start_api_server():
     app = web.Application()
-    app.router.add_get("/api/streamfile/{file_id}", streamfile_api)
+    app.router.add_get("/streamfile/{file_id}", streamfile_api)
 
     runner = web.AppRunner(app)
     await runner.setup()
