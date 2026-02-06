@@ -9,31 +9,40 @@ from Lucia.util.file_properties import get_name, get_hash, get_media_file_size
 from database.topdb import silentdb
 
 async def streamfile_api(request):
-    file_id = request.match_info["file_id"]
-    user_id = request.query.get("user_id")
+    try:
+        file_id = request.match_info.get("file_id")
+        print("API HIT | file_id =", file_id)
 
-    if user_id:
-        if not await db.has_premium_access(int(user_id)):
-            return web.json_response(
-                {"status": "error", "message": "Premium required"},
-                status=403
-            )
+        silent_msg = await SilentX.send_cached_media(
+            chat_id=BIN_CHANNEL,
+            file_id=file_id
+        )
 
-    silent_msg = await SilentX.send_cached_media(
-        chat_id=BIN_CHANNEL,
-        file_id=file_id
-    )
+        print("MEDIA SENT | msg_id =", silent_msg.id)
 
-    file_name = quote_plus(get_name(silent_msg))
+        try:
+            name = get_name(silent_msg)
+        except Exception as e:
+            name = "unknown_file"
+            print("get_name ERROR:", e)
 
-    stream_url = f"{URL}watch/{silent_msg.id}/{file_name}?hash={get_hash(silent_msg)}"
-    download_url = f"{URL}{silent_msg.id}/{file_name}?hash={get_hash(silent_msg)}"
+        stream_url = f"{URL}watch/{silent_msg.id}/{name}?hash={get_hash(silent_msg)}"
 
-    return web.json_response({
-        "status": "success",
-        "stream": stream_url,
-        "download": download_url
-    })
+        return web.json_response({
+            "status": "success",
+            "stream": stream_url
+        })
+
+    except Exception as e:
+        print("API CRASH:", repr(e))
+        return web.json_response(
+            {
+                "status": "error",
+                "error_type": type(e).__name__,
+                "message": str(e)
+            },
+            status=500
+        )
 
 
 
