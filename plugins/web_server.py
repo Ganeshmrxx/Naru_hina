@@ -6,13 +6,7 @@ from info import BIN_CHANNEL, URL
 from Lucia.Bot import SilentX
 from Lucia.util.file_properties import get_name, get_hash
 
-# =========================
-# API ROUTES (FIRST)
-# =========================
-api_routes = web.RouteTableDef()
 
-
-@api_routes.get("/api/streamfile/{file_id}")
 async def streamfile_api(request):
     try:
         file_id = request.match_info.get("file_id")
@@ -40,25 +34,24 @@ async def streamfile_api(request):
             "stream": stream_url
         })
 
-    except BaseException as e:
+    except BaseException:
         traceback.print_exc()
         return web.json_response(
-            {"status": "error", "message": str(e)},
+            {"status": "error", "message": "Internal error"},
             status=500
         )
 
 
-# =========================
-# WEB SERVER
-# =========================
-async def web_server():
+
+async def start_api_server():
     app = web.Application()
+    app.router.add_get("/api/streamfile/{file_id}", streamfile_api)
 
-    # 1️⃣ REGISTER API ROUTES FIRST
-    app.add_routes(api_routes)
+    runner = web.AppRunner(app)
+    await runner.setup()
 
-    # 2️⃣ REGISTER STREAM / BYTESTREAMER ROUTES AFTER
-    from plugins import route
-    app.add_routes(route.routes)
+    # 🔹 USE A DIFFERENT PORT
+    site = web.TCPSite(runner, "0.0.0.0", 8081)
+    await site.start()
 
-    return app
+    print("✅ API Server started on port 8081")
