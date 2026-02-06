@@ -5,7 +5,14 @@ from Lucia.Bot import SilentX
 from Lucia.util.file_properties import get_name, get_hash
 import traceback
 
+# ✅ CREATE ROUTES HERE (DO NOT IMPORT)
+routes = web.RouteTableDef()
 
+
+# =========================
+# API ROUTE (FIRST)
+# =========================
+@routes.get("/api/streamfile/{file_id}")
 async def streamfile_api(request):
     try:
         file_id = request.match_info.get("file_id")
@@ -23,17 +30,18 @@ async def streamfile_api(request):
         )
 
         name = get_name(silent_msg) or "file"
-        stream_url = f"{URL}watch/{silent_msg.id}/{quote_plus(name)}?hash={get_hash(silent_msg)}"
+        stream_url = (
+            f"{URL}watch/{silent_msg.id}/"
+            f"{quote_plus(name)}?hash={get_hash(silent_msg)}"
+        )
 
         return web.json_response({
             "status": "success",
             "stream": stream_url
         })
 
-    except BaseException as e:  # 🔥 IMPORTANT
-        print("API CRASH:")
+    except BaseException as e:
         traceback.print_exc()
-
         return web.json_response(
             {
                 "status": "error",
@@ -42,3 +50,20 @@ async def streamfile_api(request):
             },
             status=500
         )
+
+
+# =========================
+# WEB SERVER
+# =========================
+async def web_server():
+    app = web.Application()
+
+    # ✅ REGISTER API ROUTES FIRST
+    app.add_routes(routes)
+
+    # ❗ ONLY AFTER THIS, import & register stream routes
+    # (if you really must)
+    from plugins import route
+    app.add_routes(route.routes)
+
+    return app
