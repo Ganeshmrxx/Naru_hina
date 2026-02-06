@@ -4,7 +4,9 @@ from info import BIN_CHANNEL, URL
 from utils import get_name, get_hash
 from Lucia.Bot import SilentX
 from database.users_chats_db import db
-
+from urllib.parse import quote_plus
+from Lucia.util.file_properties import get_name, get_hash, get_media_file_size
+from database.topdb import silentdb
 
 async def streamfile_api(request):
     file_id = request.match_info["file_id"]
