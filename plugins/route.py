@@ -38,7 +38,8 @@ async def stream_handler(request: web.Request):
     except FIleNotFound as e:
         raise web.HTTPNotFound(text=e.message)
     except (AttributeError, BadStatusLine, ConnectionResetError):
-        pass
+        raise web.HTTPNotFound(text="File not found or connection lost")
+
     except Exception as e:
         LOGGER.error(e.with_traceback(None))
         raise web.HTTPInternalServerError(text="An internal error has occurred.")
@@ -60,7 +61,7 @@ async def stream_handler(request: web.Request):
     except FIleNotFound as e:
         raise web.HTTPNotFound(text=e.message)
     except (AttributeError, BadStatusLine, ConnectionResetError):
-        pass
+        raise web.HTTPNotFound(text="Stream unavailable")
     except Exception as e:
         LOGGER.error(e.with_traceback(None))
         raise web.HTTPInternalServerError(text="An internal error has occurred.")
