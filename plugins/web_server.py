@@ -1,18 +1,18 @@
 from aiohttp import web
 from urllib.parse import quote_plus
+import traceback
+
 from info import BIN_CHANNEL, URL
 from Lucia.Bot import SilentX
 from Lucia.util.file_properties import get_name, get_hash
-import traceback
-
-# ✅ CREATE ROUTES HERE (DO NOT IMPORT)
-routes = web.RouteTableDef()
-
 
 # =========================
-# API ROUTE (FIRST)
+# API ROUTES (FIRST)
 # =========================
-@routes.get("/api/streamfile/{file_id}")
+api_routes = web.RouteTableDef()
+
+
+@api_routes.get("/api/streamfile/{file_id}")
 async def streamfile_api(request):
     try:
         file_id = request.match_info.get("file_id")
@@ -43,11 +43,7 @@ async def streamfile_api(request):
     except BaseException as e:
         traceback.print_exc()
         return web.json_response(
-            {
-                "status": "error",
-                "type": type(e).__name__,
-                "message": str(e)
-            },
+            {"status": "error", "message": str(e)},
             status=500
         )
 
@@ -58,11 +54,10 @@ async def streamfile_api(request):
 async def web_server():
     app = web.Application()
 
-    # ✅ REGISTER API ROUTES FIRST
-    app.add_routes(routes)
+    # 1️⃣ REGISTER API ROUTES FIRST
+    app.add_routes(api_routes)
 
-    # ❗ ONLY AFTER THIS, import & register stream routes
-    # (if you really must)
+    # 2️⃣ REGISTER STREAM / BYTESTREAMER ROUTES AFTER
     from plugins import route
     app.add_routes(route.routes)
 
