@@ -1,7 +1,6 @@
 from aiohttp import web
 from urllib.parse import quote_plus
 from info import BIN_CHANNEL, URL
-from utils import get_name, get_hash
 from Lucia.Bot import SilentX
 from database.users_chats_db import db
 from urllib.parse import quote_plus
