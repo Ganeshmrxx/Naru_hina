@@ -20,6 +20,17 @@ routes = web.RouteTableDef()
 async def root_route_handler(request):
     return web.json_response("Telegram - @SilentXBotz")
 
+@routes.options(r"/{path:.*}")
+async def options_handler(request):
+    return web.Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+        }
+    )
+
+
 
 @routes.get(r"/watch/{path:\S+}", allow_head=True)
 async def stream_handler(request: web.Request):
@@ -143,6 +154,11 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
         status=206 if range_header else 200,
         body=body,
         headers={
+            # 🔥 CORS (REQUIRED)
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range",
             "Content-Type": f"{mime_type}",
             "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
             "Content-Length": str(req_length),
