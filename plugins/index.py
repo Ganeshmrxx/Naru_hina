@@ -170,6 +170,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                     if not isinstance(messages, list):
                         messages = [messages]
                 except Exception as e:
+                    LOGGER.info(f'{e} Is hgk')
                     errors += len(message_ids)
                     current += len(message_ids)
                     continue
