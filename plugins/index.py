@@ -195,12 +195,14 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                         media.caption = message.caption
                         save_tasks.append(save_file(media))
 
-                    except Exception:
+                    except Exception as e:
+                        LOGGER.info(f'{e} Is hgk')
                         errors += 1
                         continue
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)
                 for result in results:
                     if isinstance(result, Exception):
+                        LOGGER.info(f'{Exception} Is re')
                         errors += 1
                     else:
                         ok, code = result
