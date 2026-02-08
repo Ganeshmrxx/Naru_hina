@@ -54,7 +54,7 @@ async def start_api_server():
     app = web.Application()
     app.router.add_get(
         "/stream/{channel_id}/{message_id}",
-        stream_by_message
+        streamfile_api
     )
 
     runner = web.AppRunner(app)
