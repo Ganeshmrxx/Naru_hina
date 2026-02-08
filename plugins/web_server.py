@@ -34,9 +34,10 @@ async def streamfile_api(request):
             )
 
         # 2️⃣ Send cached media to BIN_CHANNEL
+        file_id = extract_file_id(msg)
         cached_msg = await SilentX.send_cached_media(
             chat_id=-1002059529731,
-            file_id=msg.file_id
+            file_id=file_id
         )
 
         # 3️⃣ Generate stream link using cached message
