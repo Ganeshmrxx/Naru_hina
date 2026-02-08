@@ -25,20 +25,15 @@ async def streamfile_api(request):
         message_id = int(request.match_info["message_id"])
 
         # 1️⃣ Get original message
-        msg = await SilentX.get_messages(channel_id, message_id)
+        cached_msg = await SilentX.get_messages(channel_id, message_id)
 
-        if not msg or not msg.media:
+        if not cached_msg or not cached_msg.media:
             return web.json_response(
                 {"status": "error", "message": "No media in message"},
                 status=404
             )
 
-        # 2️⃣ Send cached media to BIN_CHANNEL
-        file_id = extract_file_id(msg)
-        cached_msg = await SilentX.send_cached_media(
-            chat_id=-1002059529731,
-            file_id=file_id
-        )
+       
 
         # 3️⃣ Generate stream link using cached message
         name = get_name(cached_msg) or "file"
