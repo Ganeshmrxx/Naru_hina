@@ -42,8 +42,9 @@ async def stream_handler(request: web.Request):
             id = int(match.group(2))
         else:
             id = int(re.search(r"(\d+)(?:\/\S+)?", path).group(1))
+            cid = int(re.search(r"(\d+)(?:\/\S+)?", path).group(2))
             secure_hash = request.rel_url.query.get("hash")
-        return web.Response(text=await render_page(id, secure_hash), content_type='text/html')
+        return web.Response(text=await render_page(id, secure_hash,cid), content_type='text/html')
     except InvalidHash as e:
         raise web.HTTPForbidden(text=e.message)
     except FIleNotFound as e:
@@ -66,7 +67,8 @@ async def stream_handler(request: web.Request):
         else:
             id = int(re.search(r"(\d+)(?:\/\S+)?", path).group(1))
             secure_hash = request.rel_url.query.get("hash")
-        return await media_streamer(request, id, secure_hash)
+            cid = int(re.search(r"(\d+)(?:\/\S+)?", path).group(2))
+        return await media_streamer(request, id, secure_hash,cid)
     except InvalidHash as e:
         raise web.HTTPForbidden(text=e.message)
     except FIleNotFound as e:
@@ -79,7 +81,7 @@ async def stream_handler(request: web.Request):
 
 class_cache = {}
 
-async def media_streamer(request: web.Request, id: int, secure_hash: str):
+async def media_streamer(request: web.Request, id: int, secure_hash: str, cid:int):
     range_header = request.headers.get("Range", 0)
     
     index = min(work_loads, key=work_loads.get)
