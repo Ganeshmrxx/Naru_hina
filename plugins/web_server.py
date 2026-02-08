@@ -9,43 +9,53 @@ from Lucia.util.file_properties import get_name, get_hash
 
 async def streamfile_api(request):
     try:
-        file_id = request.match_info.get("file_id")
-        if not file_id:
-            return web.json_response(
-                {"status": "error", "message": "file_id missing"},
-                status=400
-            )
+        channel_id = int(request.match_info.get("channel_id"))
+        message_id = int(request.match_info.get("message_id"))
 
-        print("API HIT | file_id =", file_id)
+        print("API HIT | channel:", channel_id, "message:", message_id)
 
-        silent_msg = await SilentX.send_cached_media(
-            chat_id=BIN_CHANNEL,
-            file_id=file_id
+        # 🔹 Fetch message directly
+        msg = await SilentX.get_messages(
+            chat_id=channel_id,
+            message_ids=message_id
         )
 
-        name = get_name(silent_msg) or "file"
+        if not msg or not msg.media:
+            return web.json_response(
+                {"status": "error", "message": "Media not found"},
+                status=404
+            )
+
+        name = get_name(msg) or "file"
+
         stream_url = (
-            f"{URL}watch/{silent_msg.id}/"
-            f"{quote_plus(name)}?hash={get_hash(silent_msg)}"
+            f"{URL}{msg.id}/"
+            f"{quote_plus(name)}?hash={get_hash(msg)}"
         )
 
         return web.json_response({
             "status": "success",
+            "channel_id": channel_id,
+            "message_id": message_id,
             "stream": stream_url
         })
 
-    except BaseException:
+    except BaseException as e:
         traceback.print_exc()
         return web.json_response(
-            {"status": "error", "message": "Internal error"},
+            {"status": "error", "message": str(e)},
             status=500
         )
 
 
 
+
 async def start_api_server():
     app = web.Application()
-    app.router.add_get("/streamfile/{file_id}", streamfile_api)
+    app.router.add_get(
+        "/stream/{channel_id}/{message_id}",
+        stream_by_message
+    )
 
     runner = web.AppRunner(app)
     await runner.setup()
