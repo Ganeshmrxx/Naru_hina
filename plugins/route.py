@@ -92,7 +92,7 @@ async def stream_handler(request: web.Request):
 
 class_cache = {}
 
-async def media_streamer(request: web.Request, id: int, secure_hash: str, cid:int):
+async def media_streamer(request: web.Request, id: int, secure_hash: str, channel_id: int):
     range_header = request.headers.get("Range", 0)
     
     index = min(work_loads, key=work_loads.get)
@@ -109,7 +109,7 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str, cid:in
         tg_connect = ByteStreamer(faster_client)
         class_cache[faster_client] = tg_connect
     LOGGER.info("before calling get_file_properties")
-    file_id = await tg_connect.get_file_properties(id)
+    file_id = await tg_connect.get_file_properties(id,channel_id)
     LOGGER.info("after calling get_file_properties")
     
     if file_id.unique_id[:6] != secure_hash:
