@@ -8,9 +8,9 @@ import urllib.parse
 from logging_helper import LOGGER
 import aiohttp
 
-async def render_page(id, secure_hash, src=None):
-    file = await SilentX.get_messages(int(BIN_CHANNEL), int(id))
-    file_data = await get_file_ids(SilentX, int(BIN_CHANNEL), int(id))
+async def render_page(id, secure_hash, cid, src=None):
+    file = await SilentX.get_messages(int(cid), int(id))
+    file_data = await get_file_ids(SilentX, int(cid), int(id))
     if file_data.unique_id[:6] != secure_hash:
         LOGGER.info(f"link hash: {secure_hash} - {file_data.unique_id[:6]}")
         LOGGER.info(f"Invalid hash for message with - ID {id}")
