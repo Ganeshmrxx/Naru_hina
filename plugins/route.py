@@ -67,8 +67,19 @@ async def stream_handler(request: web.Request):
         else:
             id = int(re.search(r"(\d+)(?:\/\S+)?", path).group(1))
             secure_hash = request.rel_url.query.get("hash")
-            cid = int(re.search(r"(\d+)(?:\/\S+)?", path).group(2))
-        return await media_streamer(request, id, secure_hash,cid)
+        # 🔥 CHANNEL ID FROM LINK
+        channel_id = request.rel_url.query.get("cid")
+        if not channel_id:
+            return web.Response(status=400, text="Missing channel id")
+
+        channel_id = int(channel_id)
+
+        return await media_streamer(
+            request,
+            msg_id,
+            secure_hash,
+            channel_id
+        )   
     except InvalidHash as e:
         raise web.HTTPForbidden(text=e.message)
     except FIleNotFound as e:
