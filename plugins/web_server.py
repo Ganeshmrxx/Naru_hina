@@ -39,7 +39,7 @@ async def streamfile_api(request):
         name = get_name(cached_msg) or "file"
         stream_url = (
             f"{URL}{cached_msg.id}/"
-            f"{quote_plus(name)}?hash={get_hash(cached_msg)}"
+            f"{quote_plus(name)}?hash={get_hash(cached_msg)}&cid={channel_id}"
         )
 
         return web.json_response({
