@@ -76,7 +76,7 @@ async def stream_handler(request: web.Request):
 
         return await media_streamer(
             request,
-            msg_id,
+            id,
             secure_hash,
             channel_id
         )   
