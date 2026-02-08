@@ -7,46 +7,58 @@ from Lucia.Bot import SilentX
 from Lucia.util.file_properties import get_name, get_hash
 
 
+def extract_file_id(msg):
+    if msg.document:
+        return msg.document.file_id
+    if msg.video:
+        return msg.video.file_id
+    if msg.audio:
+        return msg.audio.file_id
+    if msg.voice:
+        return msg.voice.file_id
+    return None
+
+
 async def streamfile_api(request):
     try:
-        channel_id = int(request.match_info.get("channel_id"))
-        message_id = int(request.match_info.get("message_id"))
+        channel_id = int(request.match_info["channel_id"])
+        message_id = int(request.match_info["message_id"])
 
-        print("API HIT | channel:", channel_id, "message:", message_id)
-
-        # 🔹 Fetch message directly
-        msg = await SilentX.get_messages(
-            chat_id=channel_id,
-            message_ids=message_id
-        )
+        # 1️⃣ Get original message
+        msg = await SilentX.get_messages(channel_id, message_id)
 
         if not msg or not msg.media:
             return web.json_response(
-                {"status": "error", "message": "Media not found"},
+                {"status": "error", "message": "No media in message"},
                 status=404
             )
 
-        name = get_name(msg) or "file"
+        # 2️⃣ Send cached media to BIN_CHANNEL
+        cached_msg = await SilentX.send_cached_media(
+            chat_id=-1002059529731,
+            file_id=msg.file_id
+        )
 
+        # 3️⃣ Generate stream link using cached message
+        name = get_name(cached_msg) or "file"
         stream_url = (
-            f"{URL}{msg.id}/"
-            f"{quote_plus(name)}?hash={get_hash(msg)}"
+            f"{URL}{cached_msg.id}/"
+            f"{quote_plus(name)}?hash={get_hash(cached_msg)}"
         )
 
         return web.json_response({
             "status": "success",
             "channel_id": channel_id,
             "message_id": message_id,
+            "cached_message_id": cached_msg.id,
             "stream": stream_url
         })
 
-    except BaseException as e:
-        traceback.print_exc()
+    except Exception as e:
         return web.json_response(
             {"status": "error", "message": str(e)},
             status=500
         )
-
 
 
 
