@@ -33,30 +33,33 @@ class ByteStreamer:
         self.cached_file_ids: Dict[int, FileId] = {}
         asyncio.create_task(self.clean_cache())
 
-    async def get_file_properties(self, id: int) -> FileId:
+    async def get_file_properties(self, id: int, channel_id: int) -> FileId:
+        cache_key = f"{channel_id}:{id}"
+        if cache_key not in self.cached_file_ids:
+            await self.generate_file_properties(id, channel_id)
+        return self.cached_file_ids[cache_key]
+
         """
         Returns the properties of a media of a specific message in a FIleId class.
         if the properties are cached, then it'll return the cached results.
         or it'll generate the properties from the Message ID and cache them.
         """
-        if id not in self.cached_file_ids:
-            await self.generate_file_properties(id)
-            LOGGER.info(f"Cached file properties for message with ID {id}")
-        return self.cached_file_ids[id]
+       
     
-    async def generate_file_properties(self, id: int) -> FileId:
+   async def generate_file_properties(self, id: int, channel_id: int) -> FileId:
+       file_id = await get_file_ids(self.client, channel_id, id)
+       LOGGER.info(f"Generated file ID and Unique ID for message with ID {id}")
+       if not file_id:
+           raise FileNotFound
+       cache_key = f"{channel_id}:{id}"
+       self.cached_file_ids[cache_key] = file_id
+       return file_id
+    
         """
         Generates the properties of a media file on a specific message.
         returns ths properties in a FIleId class.
         """
-        file_id = await get_file_ids(self.client, BIN_CHANNEL, id)
-        LOGGER.info(f"Generated file ID and Unique ID for message with ID {id}")
-        if not file_id:
-            LOGGER.info(f"Message with ID {id} not found")
-            raise FIleNotFound
-        self.cached_file_ids[id] = file_id
-        LOGGER.info(f"Cached media message with ID {id}")
-        return self.cached_file_ids[id]
+        
 
     async def generate_media_session(self, client: Client, file_id: FileId) -> Session:
         """
