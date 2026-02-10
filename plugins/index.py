@@ -202,7 +202,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)
                 for result in results:
                     if isinstance(result, Exception):
-                        LOGGER.info(f'{Exception} Is re')
+                        LOGGER.error(f"Save failed: {result}", exc_info=True)
                         errors += 1
                     else:
                         ok, code = result
