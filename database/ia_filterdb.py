@@ -80,6 +80,7 @@ async def save_file(media):
             LOGGER.info(f'{file_name} Is Already Saved In Secondary Database!')
             return False, 0
             
+    media.hash = getattr(media, "hash", None)
     try:
         file = saveMedia(
             file_id=file_id,
