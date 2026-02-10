@@ -8,6 +8,7 @@ from info import ADMINS, INDEX_REQ_CHANNEL as LOG_CHANNEL
 from database.ia_filterdb import save_file
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp, get_readable_time
+from Lucia.util.file_properties import  get_hash
 from math import ceil
 from logging_helper import LOGGER
 
@@ -194,7 +195,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                         media.caption = message.caption
                         media.message_id = message.id
                         media.channel_id = message.chat.id
-                        media.hash = getattr(media, "hash", None)
+                        media.hash = get_hash(message) 
                         
                         save_tasks.append(save_file(media))
 
