@@ -192,6 +192,9 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                             continue
                         media.file_type = message.media.value
                         media.caption = message.caption
+                        media.message_id = message.id
+                        media.channel_id = message.chat.id
+                        media.hash = getattr(media, "hash", None)
                         save_tasks.append(save_file(media))
 
                     except Exception:
