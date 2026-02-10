@@ -59,6 +59,7 @@ async def check_db_size(silentdb):
     return (await silentdb.command("dbstats"))['dataSize']
     
 async def save_file(media):
+    LOGGER.error(f'Val {media}')
     file_id, file_ref = unpack_new_file_id(media.file_id)
     file_name = re.sub(r"[_\-\.#+$%^&*()!~`,;:\"'?/<>\[\]{}=|\\]", " ", str(media.file_name))
     file_name = re.sub(r"\s+", " ", file_name).strip()    
