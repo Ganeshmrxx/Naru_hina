@@ -37,26 +37,40 @@ media_filter = filters.document | filters.video | filters.audio
 
 @Client.on_message(filters.chat(CHANNELS) & media_filter)
 async def media(bot, message):
-    """Media Handler"""
+
+    LOGGER.info("Handler Triggered")
+
     for file_type in ("document", "video", "audio"):
         media = getattr(message, file_type, None)
-        if media is not None:
+        if media:
             break
     else:
+        LOGGER.info("No media found")
         return
+
+    LOGGER.info(f"Detected Type: {file_type}")
+
     media.file_type = file_type
-    media.caption = message.caption
-    # Add channel ID and message ID
-    media.channel_id = message.chat.id       # ▶️ Channel ID
-    media.message_id = message.id   
-    media.hash = get_hash(message)    # ▶️ Message ID
+    media.caption = message.caption or ""
+    media.channel_id = message.chat.id
+    media.message_id = message.id
+
+    if not getattr(media, "file_name", None):
+        media.file_name = f"{file_type}_{message.id}"
+
+    media.hash = get_hash(message)
+
+    LOGGER.info(f"Saving: {media.file_name}")
+
     success, silentxbotz = await save_file(media)
-    try:  
-        if success and silentxbotz == 1 and await get_status(bot.me.id):            
-            await send_movie_update(bot, file_name=media.file_name, caption=media.caption)
-    except Exception as e:
-        LOGGER.error(f"Error In Movie Update - {e}")
-        pass
+
+    LOGGER.info(f"Save status: {success}")
+
+    if success:
+        LOGGER.info("Saved Successfully")
+    else:
+        LOGGER.info("Not Saved")
+
 
 async def send_movie_update(bot, file_name, caption):
     try:
