@@ -1686,9 +1686,11 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 file_id=file_id,
             )
             """
+          
             
             fileName = {quote_plus(get_name(cached_msg))}
-            silent_stream = f"{URL}watch/{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}"
+            silent_stream = f"{URL}{cached_msg.id}/"
+                            f"{quote_plus(name)}?hash={get_hash(cached_msg)}&cid={channel_id}"
             
             silent_download = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
             btn = [[
