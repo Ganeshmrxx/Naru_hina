@@ -1669,18 +1669,28 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
     elif lazyData.startswith("streamfile"):
         _, file_id = lazyData.split(":")
+        prefix, lazyData = data.split(":")
+        channel_id, message_id = lazyData.split("_")
+        channel_id = int(channel_id)
+        message_id = int(message_id)
+
         try:
             user_id = query.from_user.id
             is_premium_user = await db.has_premium_access(user_id)
 
             username = query.from_user.mention
+            cached_msg = await SilentX.get_messages(channel_id, message_id)
+            """
             silent_msg = await client.send_cached_media(
                 chat_id=BIN_CHANNEL,
                 file_id=file_id,
             )
-            fileName = {quote_plus(get_name(silent_msg))}
-            silent_stream = f"{URL}watch/{str(silent_msg.id)}/{quote_plus(get_name(silent_msg))}?hash={get_hash(silent_msg)}"
-            silent_download = f"{URL}{str(silent_msg.id)}/{quote_plus(get_name(silent_msg))}?hash={get_hash(silent_msg)}"
+            """
+            
+            fileName = {quote_plus(get_name(cached_msg))}
+            silent_stream = f"{URL}watch/{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}"
+            
+            silent_download = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}}&cid={channel_id}"
             btn = [[
                 InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
                 InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
@@ -2386,7 +2396,7 @@ async def auto_filter(client, msg, spoll=False):
             [
                 InlineKeyboardButton(
                     text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                    callback_data=f'streamfile:{message.chat.id}_{message.id}'
+                    callback_data=f'streamfile:{file.file_id}'
                 ),
             ]
             for file in files
