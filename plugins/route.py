@@ -12,6 +12,7 @@ from Lucia.zzint import StartTime, __version__
 from Lucia.util.custom_dl import ByteStreamer
 from Lucia.util.time_format import get_readable_time
 from Lucia.util.render_template import render_page
+from itsdangerous import BadSignature
 from info import *
 
 routes = web.RouteTableDef()
@@ -55,7 +56,7 @@ async def stream_handler(request: web.Request):
     except Exception as e:
         LOGGER.error(e.with_traceback(None))
         raise web.HTTPInternalServerError(text="An internal error has occurred.")
-
+"""
 @routes.get(r"/{path:\S+}", allow_head=True)
 async def stream_handler(request: web.Request):
     try:
@@ -89,7 +90,37 @@ async def stream_handler(request: web.Request):
     except Exception as e:
         LOGGER.error(e.with_traceback(None))
         raise web.HTTPInternalServerError(text="An internal error has occurred.")
+"""
 
+@routes.get(r"/watch/{token}", allow_head=True)
+async def stream_handler(request: web.Request):
+    try:
+        token = request.match_info["token"]
+
+        try:
+            data = serializer.loads(token)
+        except BadSignature:
+            raise web.HTTPForbidden(text="Invalid or tampered link")
+
+        # 🔥 Expiry check
+        if data["exp"] < int(time.time()):
+            raise web.HTTPForbidden(text="Link expired")
+
+        message_id = data["id"]
+        channel_id = data["cid"]
+        secure_hash = data["hash"]
+
+        return await media_streamer(
+            request,
+            message_id,
+            secure_hash,
+            channel_id
+        )
+
+    except Exception as e:
+        LOGGER.error(str(e))
+        raise web.HTTPInternalServerError(text="Invalid stream link")
+        
 class_cache = {}
 
 async def media_streamer(request: web.Request, id: int, secure_hash: str, channel_id: int):
