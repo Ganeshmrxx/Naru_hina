@@ -1669,8 +1669,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
     elif lazyData.startswith("streamfile"):
         _, file_id = lazyData.split(":")
-        prefix, lazyData = data.split(":")
-        channel_id, message_id = lazyData.split("_")
+        prefix, lazyDat = lazyData.split(":")
+        channel_id, message_id = lazyDat.split("_")
         channel_id = int(channel_id)
         message_id = int(message_id)
 
