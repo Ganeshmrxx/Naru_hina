@@ -1704,7 +1704,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                     InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
                     InlineKeyboardButton(
                         "𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
-                        url=f"https://t.me/ipapkorn_v1_bot?start=file_{query.message.chat.id}_{file_id}"
+                        url=f"https://t.me/ipapkorn01_bot?start=file_{query.message.chat.id}_{file_id}")
                     )
                 ],
                 [
