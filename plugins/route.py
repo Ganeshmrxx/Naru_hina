@@ -12,10 +12,12 @@ from Lucia.zzint import StartTime, __version__
 from Lucia.util.custom_dl import ByteStreamer
 from Lucia.util.time_format import get_readable_time
 from Lucia.util.render_template import render_page
-from itsdangerous import BadSignature
+from itsdangerous import URLSafeSerializer, BadSignature
 from info import *
 
 routes = web.RouteTableDef()
+SECRET_KEY = os.getenv("SECRET_KEY") or "SUPER_SECRET_KEY_CHANGE_THIS"
+serializer = URLSafeSerializer(SECRET_KEY)
 
 @routes.get("/", allow_head=True)
 async def root_route_handler(request):
