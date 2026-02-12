@@ -1717,7 +1717,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 "⭐ *Your File Below*",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
-            await silent_msg.reply_text(
+            await cached_msg.reply_text(
                 text=f"•• ʟɪɴᴋ ɢᴇɴᴇʀᴀᴛᴇᴅ ꜰᴏʀ ɪᴅ #{user_id} \n•• ᴜꜱᴇʀɴᴀᴍᴇ : {username} \n\n•• ᖴᎥᒪᗴ Nᗩᗰᗴ : {fileName}",
                 quote=True,
                 disable_web_page_preview=True,
