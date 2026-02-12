@@ -28,3 +28,4 @@ ffmpeg-python==0.2.0
 jinja2
 fuzzywuzzy
 python-Levenshtein==0.21.0 
+itsdangerous
