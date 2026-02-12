@@ -1679,7 +1679,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             is_premium_user = await db.has_premium_access(user_id)
 
             username = query.from_user.mention
-            cached_msg = await SilentX.get_messages(channel_id, message_id)
+            cached_msg = await client.get_messages(channel_id, message_id)
             """
             silent_msg = await client.send_cached_media(
                 chat_id=BIN_CHANNEL,
