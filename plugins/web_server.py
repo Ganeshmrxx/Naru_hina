@@ -5,6 +5,11 @@ import traceback
 from info import BIN_CHANNEL, URL
 from Lucia.Bot import SilentX
 from Lucia.util.file_properties import get_name, get_hash
+from itsdangerous import URLSafeSerializer
+
+
+SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_THIS"
+serializer = URLSafeSerializer(SECRET_KEY)
 
 
 def extract_file_id(msg):
@@ -37,10 +42,23 @@ async def streamfile_api(request):
 
         # 3️⃣ Generate stream link using cached message
         name = get_name(cached_msg) or "file"
+        payload = {
+            "id": cached_msg.id,
+            "cid": channel_id,
+            "hash": get_hash(cached_msg),
+            "exp": int(time.time()) + 3600  # 1 hour expiry
+            }
+
+
+        token = serializer.dumps(payload)
+        stream_url = f"{URL}{token}"
+        
+        """
         stream_url = (
             f"{URL}{cached_msg.id}/"
             f"{quote_plus(name)}?hash={get_hash(cached_msg)}&cid={channel_id}"
         )
+        """
 
         return web.json_response({
             "status": "success",
