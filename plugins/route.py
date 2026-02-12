@@ -32,7 +32,7 @@ async def options_handler(request):
     )
 
 
-
+"""
 @routes.get(r"/watch/{path:\S+}", allow_head=True)
 async def stream_handler(request: web.Request):
     try:
@@ -56,6 +56,7 @@ async def stream_handler(request: web.Request):
     except Exception as e:
         LOGGER.error(e.with_traceback(None))
         raise web.HTTPInternalServerError(text="An internal error has occurred.")
+"""
 """
 @routes.get(r"/{path:\S+}", allow_head=True)
 async def stream_handler(request: web.Request):
@@ -92,7 +93,7 @@ async def stream_handler(request: web.Request):
         raise web.HTTPInternalServerError(text="An internal error has occurred.")
 """
 
-@routes.get(r"/watch/{token}", allow_head=True)
+@routes.get(r"/{token}", allow_head=True)
 async def stream_handler(request: web.Request):
     try:
         token = request.match_info["token"]
