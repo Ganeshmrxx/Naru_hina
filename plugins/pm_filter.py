@@ -30,6 +30,7 @@ import requests
 import string
 import tracemalloc
 
+
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"
@@ -85,7 +86,20 @@ def update_offset(chat_id, category, new_offset):
         upsert=True
     )
 
-
+def get_player_link(channel_id, message_id):
+    api_url = f"https://app-ganeshmrxx-bc5f894b.koyeb.app/api/stream/{channel_id}/{message_id}"
+    
+    r = requests.get(api_url)
+    r.raise_for_status()
+    
+    stream = r.json().get("stream")
+    
+    encoded_stream = urllib.parse.quote(stream, safe='')
+    
+    player_url = f"https://midnightblue-squirrel-534135.hostingersite.com/player?url={encoded_stream}"
+    
+    return player_url
+    
 async def delete_after_delay(client, chat_id, messages, pid):
     await asyncio.sleep(600)  # 10 minutes = 600 seconds
     for mid in messages:
@@ -1680,6 +1694,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
             username = query.from_user.mention
             cached_msg = await client.get_messages(channel_id, message_id)
+            link = get_player_link(channel_id, message_id)
+
+
             """
             silent_msg = await client.send_cached_media(
                 chat_id=BIN_CHANNEL,
@@ -1689,11 +1706,11 @@ async def cb_handler(client: Client, query: CallbackQuery):
           
             
             fileName = {quote_plus(get_name(cached_msg))}
-            silent_stream = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
+            #silent_stream = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
             
             silent_download = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
             btn = [[
-                InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
+                InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=link),
                 InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
                                      url=f"https://t.me/ipapkorn01_bot?start=file_{query.message.chat.id}_{file_id}")
             ]]
@@ -1702,7 +1719,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             )
             btn = [
                 [
-                    InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=silent_stream),
+                    InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=link),
                     InlineKeyboardButton(
                         "𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
                         url=f"https://t.me/ipapkorn01_bot?start=file_{query.message.chat.id}_{file_id}")
