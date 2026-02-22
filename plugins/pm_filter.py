@@ -1705,7 +1705,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                  "exp": int(time.time()) + 3600  # 1 hour expiry
                  }
             token = serializer.dumps(payload)
-            stream_url = f"{URL}{token}")
+            stream_url = f"{URL}{token}"
             encoded_stream = urllib.parse.quote(stream, safe='')
     
             player_url = f"https://midnightblue-squirrel-534135.hostingersite.com/player?url={encoded_stream}"
