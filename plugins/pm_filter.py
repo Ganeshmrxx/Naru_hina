@@ -1708,7 +1708,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                  }
             token = serializer.dumps(payload)
             stream_url = f"{URL}{token}"
-            encoded_stream = urllib.parse.quote(stream, safe='')
+            encoded_stream = urllib.parse.quote(stream_url, safe='')
     
             player_url = f"https://midnightblue-squirrel-534135.hostingersite.com/player?url={encoded_stream}"
 
