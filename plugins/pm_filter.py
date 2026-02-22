@@ -1738,7 +1738,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             )
             btn = [
                 [
-                    InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=link),
+                    InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=player_url),
                     InlineKeyboardButton(
                         "𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
                         url=f"https://t.me/ipapkorn01_bot?start=file_{query.message.chat.id}_{file_id}")
@@ -1753,12 +1753,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 "⭐ *Your File Below*",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
-            await cached_msg.reply_text(
-                text=f"•• ʟɪɴᴋ ɢᴇɴᴇʀᴀᴛᴇᴅ ꜰᴏʀ ɪᴅ #{user_id} \n•• ᴜꜱᴇʀɴᴀᴍᴇ : {username} \n\n•• ᖴᎥᒪᗴ Nᗩᗰᗴ : {fileName}",
-                quote=True,
-                disable_web_page_preview=True,
-                reply_markup=InlineKeyboardMarkup(btn)
-            )
+            
         except Exception as e:
             LOGGER.error(e)
             await query.answer(f"⚠️ SOMETHING WENT WRONG \n\n{e}", show_alert=True)
