@@ -29,6 +29,7 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
+from itsdangerous import URLSafeSerializer
 
 
 tracemalloc.start()
@@ -46,6 +47,9 @@ client_mongo = MongoClient(DATABASE_URIx)
 dbx = client_mongo[DATABASE_NAMEx]
 xchannels = dbx["xData"]
 xpages = dbx["xpages"]
+
+SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_THIS"
+serializer = URLSafeSerializer(SECRET_KEY)
 
 CATEGORY_CHANNELS = {
     "x_eng": -1003448971681,
@@ -1694,8 +1698,21 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
             username = query.from_user.mention
             cached_msg = await client.get_messages(channel_id, message_id)
-            link = get_player_link(channel_id, message_id)
+            payload = {
+                 "id": cached_msg.id,
+                 "cid": channel_id,
+                 "hash": get_hash(cached_msg),
+                 "exp": int(time.time()) + 3600  # 1 hour expiry
+                 }
+            token = serializer.dumps(payload)
+            stream_url = f"{URL}{token}")
+            encoded_stream = urllib.parse.quote(stream, safe='')
+    
+            player_url = f"https://midnightblue-squirrel-534135.hostingersite.com/player?url={encoded_stream}"
 
+
+
+        
 
             """
             silent_msg = await client.send_cached_media(
@@ -1710,7 +1727,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             
             silent_download = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
             btn = [[
-                InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=link),
+                InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=player_url),
                 InlineKeyboardButton("𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
                                      url=f"https://t.me/ipapkorn01_bot?start=file_{query.message.chat.id}_{file_id}")
             ]]
