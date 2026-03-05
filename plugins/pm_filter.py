@@ -1766,7 +1766,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             ]
 
             await query.edit_message_text(
-                "⭐ *Your File Below*",
+                f"{fileName}⭐ *Your File Below*",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
 
