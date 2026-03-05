@@ -469,7 +469,7 @@ async def next_page(bot, query):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url = await generate_player_url(file.channel_id, file.message_id)
+                        callback_data=f"streamfile:{file.channel_id}_{file.message_id}"
                     ),
                 ]
                 for file in files
@@ -690,7 +690,7 @@ async def filter_qualities_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url = await generate_player_url(file.channel_id, file.message_id)
+                        callback_data=f"streamfile:{file.channel_id}_{file.message_id}"
                     ),
                 ]
                 for file in files
@@ -854,7 +854,7 @@ async def filter_languages_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url = await generate_player_url(file.channel_id, file.message_id)
+                        callback_data=f"streamfile:{file.channel_id}_{file.message_id}"
                     ),
                 ]
                 for file in files
@@ -1017,7 +1017,7 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url=await generate_player_url(file.channel_id, file.message_id)
+                        callback_data=f"streamfile:{file.channel_id}_{file.message_id}"
                     ),
                 ]
                 for file in files
@@ -2444,7 +2444,7 @@ async def auto_filter(client, msg, spoll=False):
             [
                 InlineKeyboardButton(
                     text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                    url = await generate_player_url(file.channel_id, file.message_id)
+                    callback_data=f"streamfile:{file.channel_id}_{file.message_id}"
                 ),
             ]
             for file in files
