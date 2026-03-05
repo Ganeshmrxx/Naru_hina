@@ -482,10 +482,12 @@ async def next_page(bot, query):
                            InlineKeyboardButton("ꜱᴇᴀꜱᴏɴ", callback_data=f"seasons#{key}#0")
                        ]
                        )
-            btn.insert(1, [
-                InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
+            """
+                    btn.insert(1, [
+                        InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
 
-            ])
+                    ])
+                    """
         else:
             btn = []
             btn.insert(0,
@@ -702,10 +704,12 @@ async def filter_qualities_cb_handler(client: Client, query: CallbackQuery):
                            InlineKeyboardButton("ꜱᴇᴀꜱᴏɴ", callback_data=f"seasons#{key}#0")
                        ]
                        )
-            btn.insert(1, [
-                InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
+            """
+                    btn.insert(1, [
+                        InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
 
-            ])
+                    ])
+                    """
 
         else:
             btn = []
@@ -866,10 +870,12 @@ async def filter_languages_cb_handler(client: Client, query: CallbackQuery):
                            InlineKeyboardButton("ꜱᴇᴀꜱᴏɴ", callback_data=f"seasons#{key}#0")
                        ]
                        )
-            btn.insert(1, [
-                InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
+            """
+                    btn.insert(1, [
+                        InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
 
-            ])
+                    ])
+                    """
         else:
             btn = []
             btn.insert(0,
@@ -1029,10 +1035,12 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
                            InlineKeyboardButton("ꜱᴇᴀꜱᴏɴ", callback_data=f"seasons#{key}#0")
                        ]
                        )
-            btn.insert(1, [
-                InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
+            """
+                    btn.insert(1, [
+                        InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
 
-            ])
+                    ])
+                    """
         else:
             btn = []
             btn.insert(0,
@@ -1740,7 +1748,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
             )
             """
 
-            fileName = {quote_plus(get_name(cached_msg))}
+            fileName = get_name(cached_msg)
+            text = f"{clean_filename(file.file_name)}\n\n{extract_tag(file.file_name)} \n\n{silent_size(file.file_size)}",
             # silent_stream = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
 
             silent_download = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
@@ -1766,7 +1775,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             ]
 
             await query.edit_message_text(
-                f"{fileName}⭐ *Your File Below*",
+                f"{text}⭐",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
 
@@ -2456,10 +2465,12 @@ async def auto_filter(client, msg, spoll=False):
                        InlineKeyboardButton("ꜱᴇᴀꜱᴏɴ", callback_data=f"seasons#{key}#0")
                    ]
                    )
+        """
         btn.insert(1, [
             InlineKeyboardButton("📥 Sᴇɴᴅ Aʟʟ 📥", callback_data=f"sendfiles#{key}")
 
         ])
+        """
     else:
         btn = []
         btn.insert(0,
