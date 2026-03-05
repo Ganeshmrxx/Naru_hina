@@ -33,7 +33,6 @@ from itsdangerous import URLSafeSerializer
 import time
 import urllib.parse
 
-
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"
@@ -75,6 +74,19 @@ TARGET_CHANNELS = [
 
 ]
 
+def generate_player_url(file):
+    payload = {
+        "id": file.message_id,
+        "cid": file.channel_id,
+        "hash": file.hash,
+        "exp": int(time.time()) + 3600
+    }
+
+    token = serializer.dumps(payload)
+    stream_url = f"{URL}{token}"
+    encoded_stream = urllib.parse.quote(stream_url, safe='')
+
+    return f"https://playtera.in/player?url={encoded_stream}"
 
 def get_offset(chat_id, category):
     entry = xpages.find_one({"chat_id": chat_id, "category": category})
@@ -92,20 +104,22 @@ def update_offset(chat_id, category, new_offset):
         upsert=True
     )
 
+
 def get_player_link(channel_id, message_id):
     api_url = f"https://app-ganeshmrxx-bc5f894b.koyeb.app/api/stream/{channel_id}/{message_id}"
-    
+
     r = requests.get(api_url)
     r.raise_for_status()
-    
+
     stream = r.json().get("stream")
-    
+
     encoded_stream = urllib.parse.quote(stream, safe='')
-    
-    player_url = f"https://midnightblue-squirrel-534135.hostingersite.com/player?url={encoded_stream}"
-    
+
+    player_url = f"https://playtera.in/player?url={encoded_stream}"
+
     return player_url
-    
+
+
 async def delete_after_delay(client, chat_id, messages, pid):
     await asyncio.sleep(600)  # 10 minutes = 600 seconds
     for mid in messages:
@@ -118,7 +132,7 @@ async def delete_after_delay(client, chat_id, messages, pid):
     processing_msg = await client.edit_message_text(
         chat_id,
         message_id=pid,
-        text = "⏳ Files Deleted | Hila liya hoga 💦💦",
+        text="⏳ Files Deleted | Hila liya hoga 💦💦",
         reply_markup=InlineKeyboardMarkup(
             [
                 [
@@ -126,12 +140,12 @@ async def delete_after_delay(client, chat_id, messages, pid):
                         "Movies / Webseries 🔗",
                         url="https://t.me/ipapkorn_pro"
                     )
-                ],[
-                    InlineKeyboardButton(
-                        "BackUp Channel 🔗",
-                        url="https://t.me/muvibots"
-                    )
-                ]
+                ], [
+                InlineKeyboardButton(
+                    "BackUp Channel 🔗",
+                    url="https://t.me/muvibots"
+                )
+            ]
             ]
         )
     )
@@ -141,7 +155,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
     sent_msgs = []
     prid = None
     try:
-         # store all sent message IDs
+        # store all sent message IDs
         processing_msg = await client.send_message(chat_id, "⏳ Processing your request... 10secs")
         prid = processing_msg.id
         print("processing message sent")
@@ -203,7 +217,6 @@ async def send_10_photos_and_videos(client, chat_id, category):
 
         photo_queue = []
 
-
         for video_item, photo_item in zip(videos, photos):
             print("Loop iteration hit")  # <-- this is IMPORTANT
             try:
@@ -216,7 +229,7 @@ async def send_10_photos_and_videos(client, chat_id, category):
                 if duration < 120000000000000000000 or file_size < 100_000_000:
                     # Short video → send directly
                     sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=video_msg_id,
-                                              caption="")
+                                                     caption="")
                     sent_msgs.append(sent.id)  # save message id
                     """
                     sent = await client.copy_message(chat_id=chat_id, from_chat_id=channel_id, message_id=photo_msg_id,
@@ -289,12 +302,12 @@ async def send_10_photos_and_videos(client, chat_id, category):
                         "BackUp Channel 🔗",
                         url="https://t.me/muvibots"
                     )
-                ],[
-                    InlineKeyboardButton(
-                         "Search Here 🔗",
-                        url="https://t.me/ipapkorn_pro"
-                    )
-                ]
+                ], [
+                InlineKeyboardButton(
+                    "Search Here 🔗",
+                    url="https://t.me/ipapkorn_pro"
+                )
+            ]
             ]
         )
     )
@@ -446,13 +459,15 @@ async def next_page(bot, query):
         settings = await get_settings(query.message.chat.id)
         if settings.get('button'):
             btn = [
+
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        callback_data=f'file#{file.file_id}'
+                        url=generate_player_url(file)
                     ),
                 ]
                 for file in files
+
             ]
             btn.insert(0,
                        [
@@ -669,7 +684,7 @@ async def filter_qualities_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        callback_data=f'file#{file.file_id}'
+                        url=generate_player_url(file)
                     ),
                 ]
                 for file in files
@@ -833,7 +848,7 @@ async def filter_languages_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        callback_data=f'file#{file.file_id}'
+                        url=generate_player_url(file)
                     ),
                 ]
                 for file in files
@@ -996,7 +1011,7 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        callback_data=f'file#{file.file_id}'
+                        url=generate_player_url(file)
                     ),
                 ]
                 for file in files
@@ -1701,20 +1716,16 @@ async def cb_handler(client: Client, query: CallbackQuery):
             username = query.from_user.mention
             cached_msg = await client.get_messages(channel_id, message_id)
             payload = {
-                 "id": cached_msg.id,
-                 "cid": channel_id,
-                 "hash": get_hash(cached_msg),
-                 "exp": int(time.time()) + 3600  # 1 hour expiry
-                 }
+                "id": cached_msg.id,
+                "cid": channel_id,
+                "hash": get_hash(cached_msg),
+                "exp": int(time.time()) + 3600  # 1 hour expiry
+            }
             token = serializer.dumps(payload)
             stream_url = f"{URL}{token}"
             encoded_stream = urllib.parse.quote(stream_url, safe='')
-    
-            player_url = f"https://midnightblue-squirrel-534135.hostingersite.com/player?url={encoded_stream}"
 
-
-
-        
+            player_url = f"https://playtera.in/player?url={encoded_stream}"
 
             """
             silent_msg = await client.send_cached_media(
@@ -1722,11 +1733,10 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 file_id=file_id,
             )
             """
-          
-            
+
             fileName = {quote_plus(get_name(cached_msg))}
-            #silent_stream = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
-            
+            # silent_stream = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
+
             silent_download = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
             btn = [[
                 InlineKeyboardButton("𝖲𝗍𝗋𝖾𝖺𝗆", url=player_url),
@@ -1742,7 +1752,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                     InlineKeyboardButton(
                         "𝖣𝗈𝗐𝗇𝗅𝗈𝖺𝖽",
                         url=f"https://t.me/ipapkorn01_bot?start=file_{query.message.chat.id}_{file_id}")
-                    
+
                 ],
                 [
                     InlineKeyboardButton("For 18+ Videos", url="https://t.me/+7poxvc56OO1jNTA1")
@@ -1753,7 +1763,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 "⭐ *Your File Below*",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
-            
+
         except Exception as e:
             LOGGER.error(e)
             await query.answer(f"⚠️ SOMETHING WENT WRONG \n\n{e}", show_alert=True)
@@ -2428,7 +2438,7 @@ async def auto_filter(client, msg, spoll=False):
             [
                 InlineKeyboardButton(
                     text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                    callback_data= f"streamfile:{file.channel_id}_{file.message_id}"
+                    url=generate_player_url(file)
                 ),
             ]
             for file in files
