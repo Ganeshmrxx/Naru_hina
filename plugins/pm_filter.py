@@ -1749,7 +1749,10 @@ async def cb_handler(client: Client, query: CallbackQuery):
             """
 
             fileName = get_name(cached_msg)
-            text = f"{clean_filename(file.file_name)}\n\n{extract_tag(file.file_name)} \n\n{silent_size(file.file_size)}",
+            file_name = re.sub(r"[_\-\.#+$%^&*()!~`,;:\"'?/<>\[\]{}=|\\]", " ", str(cached_msg.file_name))
+            file_name = re.sub(r"\s+", " ", file_name).strip()
+
+            text = f"{clean_filename(file_name)}\n\n{extract_tag(cached_msg.file_name)} \n\n{silent_size(cached_msg.file_size)}",
             # silent_stream = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
 
             silent_download = f"{URL}{str(cached_msg.id)}/{quote_plus(get_name(cached_msg))}?hash={get_hash(cached_msg)}&cid={channel_id}"
