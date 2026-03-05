@@ -74,19 +74,25 @@ TARGET_CHANNELS = [
 
 ]
 
-def generate_player_url(file):
+async def generate_player_url(channel_id, message_id):
+
+    cached_msg = await client.get_messages(channel_id, message_id)
+
     payload = {
-        "id": file.message_id,
-        "cid": file.channel_id,
-        "hash": file.hash,
+        "id": cached_msg.id,
+        "cid": channel_id,
+        "hash": get_hash(cached_msg),
         "exp": int(time.time()) + 3600
     }
 
     token = serializer.dumps(payload)
+
     stream_url = f"{URL}{token}"
     encoded_stream = urllib.parse.quote(stream_url, safe='')
 
-    return f"https://playtera.in/player?url={encoded_stream}"
+    player_url = f"https://playtera.in/player?url={encoded_stream}"
+
+    return player_url
 
 def get_offset(chat_id, category):
     entry = xpages.find_one({"chat_id": chat_id, "category": category})
@@ -463,7 +469,7 @@ async def next_page(bot, query):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url=generate_player_url(file)
+                        url = await generate_player_url(file.channel_id, file.message_id)
                     ),
                 ]
                 for file in files
@@ -684,7 +690,7 @@ async def filter_qualities_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url=generate_player_url(file)
+                        url = await generate_player_url(file.channel_id, file.message_id)
                     ),
                 ]
                 for file in files
@@ -848,7 +854,7 @@ async def filter_languages_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url=generate_player_url(file)
+                        url = await generate_player_url(file.channel_id, file.message_id)
                     ),
                 ]
                 for file in files
@@ -1011,7 +1017,7 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                        url=generate_player_url(file)
+                        url=await generate_player_url(file.channel_id, file.message_id)
                     ),
                 ]
                 for file in files
@@ -2438,7 +2444,7 @@ async def auto_filter(client, msg, spoll=False):
             [
                 InlineKeyboardButton(
                     text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
-                    url=generate_player_url(file)
+                    url = await generate_player_url(file.channel_id, file.message_id)
                 ),
             ]
             for file in files
