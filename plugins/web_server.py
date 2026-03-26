@@ -15,9 +15,10 @@ serializer = URLSafeSerializer(SECRET_KEY)
 from pymongo import MongoClient
 import re
 
-# ✅ Mongo connection
-uri = "mongodb+srv://g3cwork_db_user:g312345@cluster0.lpmpcya.mongodb.net/?appName=Cluster0"
+uri = os.getenv("DATABASE_URI")
 
+if not uri:
+    raise Exception("MONGO_URI not set")
 client = MongoClient(uri)
 
 # ❗ IMPORTANT FIX (NOT Cluster0)
@@ -159,9 +160,11 @@ async def start_api_server():
 
     runner = web.AppRunner(app)
     await runner.setup()
+    port = int(os.environ.get("PORT", 8000))
+
 
     # 🔹 USE A DIFFERENT PORT
-    site = web.TCPSite(runner, "0.0.0.0", 8081)
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
     print("✅ API Server started on port 8081")
