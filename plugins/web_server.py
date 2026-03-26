@@ -7,7 +7,7 @@ from info import BIN_CHANNEL, URL
 from Lucia.Bot import SilentX
 from Lucia.util.file_properties import get_name, get_hash
 from itsdangerous import URLSafeSerializer
-
+import os
 
 SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_THIS"
 serializer = URLSafeSerializer(SECRET_KEY)
