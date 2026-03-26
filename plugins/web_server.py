@@ -12,6 +12,20 @@ from itsdangerous import URLSafeSerializer
 SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_THIS"
 serializer = URLSafeSerializer(SECRET_KEY)
 
+from pymongo import MongoClient
+import re
+
+# ✅ Mongo connection
+uri = "mongodb+srv://g3cwork_db_user:g312345@cluster0.lpmpcya.mongodb.net/?appName=Cluster0"
+
+client = MongoClient(uri)
+
+# ❗ IMPORTANT FIX (NOT Cluster0)
+db = client["Cluster0"]
+collection = db["NovemberMovieData2"]
+
+print("✅ Mongo Connected")
+
 
 def extract_file_id(msg):
     if msg.document:
@@ -75,7 +89,64 @@ async def streamfile_api(request):
             status=500
         )
 
+async def search_api(request):
+    try:
+        query = request.query.get("q", "")
+        page = int(request.query.get("page", 1))
+        limit = int(request.query.get("limit", 10))
 
+        if not query:
+            return web.json_response([])
+
+        # ✅ Split words
+        words = re.sub(r"[^a-zA-Z0-9]", " ", query).split()
+
+        # ✅ AND condition
+        conditions = [
+            {"file_name": {"$regex": word, "$options": "i"}}
+            for word in words
+        ]
+
+        filter_query = {"$and": conditions} if conditions else {}
+
+        # ✅ Pagination
+        skip = (page - 1) * limit
+
+        # ✅ Latest → Old
+        cursor = (
+            collection.find(filter_query)
+            .sort("$natural", -1)
+            .skip(skip)
+            .limit(limit)
+        )
+
+        results = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])  # convert ObjectId
+            results.append({
+                "file_name": doc.get("file_name"),
+                "channel_id": doc.get("channel_id"),
+                "message_id": doc.get("message_id"),
+                "file_size": doc.get("file_size"),
+                "mime_type": doc.get("mime_type"),
+            })
+
+        total = collection.count_documents(filter_query)
+
+        return web.json_response({
+            "status": "success",
+            "query": query,
+            "page": page,
+            "total": total,
+            "results": results
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return web.json_response(
+            {"status": "error", "message": str(e)},
+            status=500
+        )
 
 async def start_api_server():
     app = web.Application()
@@ -83,6 +154,8 @@ async def start_api_server():
         "/stream/{channel_id}/{message_id}",
         streamfile_api
     )
+     # ✅ NEW SEARCH API
+    app.router.add_get("/api/search", search_api)
 
     runner = web.AppRunner(app)
     await runner.setup()
