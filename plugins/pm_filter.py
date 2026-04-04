@@ -82,7 +82,7 @@ async def generate_player_url(channel_id, message_id):
         "id": cached_msg.id,
         "cid": channel_id,
         "hash": get_hash(cached_msg),
-        "exp": int(time.time()) + 3600
+        "exp": int(time.time()) + 21600
     }
 
     token = serializer.dumps(payload)
@@ -90,7 +90,7 @@ async def generate_player_url(channel_id, message_id):
     stream_url = f"{URL}{token}"
     encoded_stream = urllib.parse.quote(stream_url, safe='')
 
-    player_url = f"https://playtera.in/player?url={encoded_stream}"
+    player_url = f"https://playtera.in?m={token}"
 
     return player_url
 
@@ -121,7 +121,7 @@ def get_player_link(channel_id, message_id):
 
     encoded_stream = urllib.parse.quote(stream, safe='')
 
-    player_url = f"https://playtera.in/player?url={encoded_stream}"
+    player_url = f"https://playtera.in?m={encoded_stream}"
 
     return player_url
 
@@ -1739,7 +1739,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             stream_url = f"{URL}{token}"
             encoded_stream = urllib.parse.quote(stream_url, safe='')
 
-            player_url = f"https://playtera.in/player?url={encoded_stream}"
+            player_url = f"https://playtera.in?m={token}"
 
             """
             silent_msg = await client.send_cached_media(
@@ -1773,7 +1773,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
                 ],
                 [
-                    InlineKeyboardButton("For 18+ Videos", url="https://t.me/+7poxvc56OO1jNTA1")
+                    InlineKeyboardButton("For 18+ Videos", url="https://t.me/muvibots")
                 ]
             ]
 
