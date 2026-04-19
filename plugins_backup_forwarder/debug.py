@@ -1,0 +1,548 @@
+# plugins/debug.py
+import asyncio
+import random as rnd
+from pymongo import MongoClient
+from pyrogram import Client, filters
+from pyrogram.enums import ChatType
+from pyrogram.errors import FloodWait, RPCError
+
+# MongoDB Setup
+DATABASE_URI = "mongodb+srv://test:test05@cluster0.g05zxpa.mongodb.net/?retryWrites=true&w=majority"
+DATABASE_NAME = "Cluster0"
+
+client_mongo = MongoClient(DATABASE_URI)
+db = client_mongo[DATABASE_NAME]
+xchannels = db["xData"]
+
+from pyrogram import filters
+
+chats_col = db["chats"]
+progress_col = db["forward_progress"]
+media_col = db["media_store"]
+summary_col = db["daily_summary"]
+
+
+def delete_chat_from_db(chat_id):
+    chats_col.delete_one({"chat_id": chat_id})
+    progress_col.delete_one({"chat_id": chat_id})
+    media_col.delete_many({"channel_id": chat_id})
+    print(f"🗑️ Deleted chat {chat_id} from DB")
+
+
+@Client.on_message(filters.left_chat_member)
+async def on_left_chat(client, message):
+    left = message.left_chat_member
+    me = await client.get_me()
+
+    # Check if *you* left
+    if left and left.id == me.id:
+        chat = message.chat
+        print(f"🚪 Manually left: {chat.title}")
+
+        # Delete from DB so forward bot never touches it
+        delete_chat_from_db(chat.id)
+
+        # Optional: notify you
+        try:
+            await client.send_message(
+                "me",
+                f"🚪 **Chat removed manually**\n\n"
+                f"📌 {chat.title}\n"
+                f"🗑 Deleted from DB"
+            )
+        except:
+            pass
+
+def mark_notnow(chat_id, reason="manual"):
+    chats_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {
+            "status": "notnow"
+        }},
+        upsert=True
+    )
+
+def mark_notnows(chat_id, reason="manual"):
+    chats_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {
+            "status": "pending"
+        }},
+        upsert=True
+    )
+async def copy_all_media(client: Client, source_channel_id, target_channel_id):
+    collection = db["xData"]
+
+    # Detect source type (group or channel)
+    source = await client.get_chat(source_channel_id)
+    source_type = source.type  # "group" / "supergroup" / "channel"
+    print(f"Source chat type: {source_type}")
+
+    print("Counting media messages...")
+
+    total_media = 0
+    total_medias = 0
+    async for msg in client.get_chat_history(source_channel_id):
+        total_medias += 1
+
+        # Count based on your rule
+        if source_type == ChatType.GROUP or source_type == ChatType.SUPERGROUP:
+            if msg.video:
+                total_media += 1
+
+        elif source_type == ChatType.CHANNEL:
+            if msg.video or msg.photo:
+                total_media += 1
+
+    print(f"Total media found: {total_media}, {total_medias}")
+    status_msg = await client.send_message("me", f"⏳ Starting forwarding...{total_media}, {total_medias}")
+
+    sent_count = 0
+    skipped_count = 0
+    failed_count = 0
+    processed = 0
+    counter = 0
+
+    async for msg in client.get_chat_history(source_channel_id):
+
+        processed += 1
+
+        # Apply copying rule
+        if source_type == ChatType.GROUP or source_type == ChatType.SUPERGROUP:
+            # GROUP → only video
+            if not msg.video:
+                continue
+
+
+        elif source_type == ChatType.CHANNEL:
+            # CHANNEL → video + photo
+            if not (msg.video or msg.photo):
+                continue
+
+        else:
+            continue
+
+        file_id = None
+        duration = None
+        size = None
+        media_type = None
+
+        if msg.video:
+
+            media_type = "video"
+            file_id = msg.video.file_unique_id
+            duration = msg.video.duration
+            size = msg.video.file_size
+
+        elif msg.photo:
+            media_type = "photo"
+            file_id = msg.photo.file_unique_id
+            size = msg.photo.file_size
+
+        # Skip duplicates
+        if collection.find_one({"_id": file_id}):
+            skipped_count += 1
+            print(f"⚠ Already exists, skipping: {file_id}")
+            continue
+
+        try:
+            copied_msg = await msg.copy(chat_id=target_channel_id)
+            print(f"✔ Copied → {target_channel_id}, new msg ID: {copied_msg.id}")
+
+            collection.insert_one({
+                "_id": file_id,
+                "channel_id": target_channel_id,
+                "message_id": copied_msg.id,
+                "media_type": media_type,
+                "duration": duration,
+                "file_size": size
+            })
+
+            sent_count += 1
+            counter += 1
+
+            if counter % 10 == 0:
+                wait_time = rnd.randint(5, 20)
+                # Send batch status update
+                progress_text = (
+                    f"🔄 **Batch Completed**\n\n"
+                    f"📂 Total Messages: `{total_medias}`\n"
+                    f"📁 Total Media Found: `{total_media}`\n\n"
+                    f"📤 Sent: `{sent_count}`\n"
+                    f"⏭ Skipped: `{skipped_count}`\n"
+                    f"❌ Failed: `{failed_count}`\n"
+                    f"⚙ Processed: `{processed}`\n"
+                    f"🕒 Remaining: `{total_media - (sent_count + skipped_count + failed_count)}`\n\n"
+                    f"⏳ Sleeping `{wait_time}` sec..."
+                )
+
+                await client.edit_message_text(
+                    chat_id="me",
+                    message_id=status_msg.id,
+                    text=progress_text
+                )
+                print(f"⏳ Batch complete. Sleeping {wait_time} sec... "
+                      f"Total {total_medias} | Sent {sent_count}")
+
+                await asyncio.sleep(wait_time)
+
+            wait_time = rnd.randint(1, 4)
+            await asyncio.sleep(wait_time)
+
+        except FloodWait as fw:
+            wait = fw.value + 2
+            print(f"⚠ FloodWait: Sleeping {wait} sec...")
+            await asyncio.sleep(wait)
+
+        except RPCError as e:
+            failed_count += 1
+            print(f"❌ RPCError: {e}")
+            await asyncio.sleep(2)
+
+        except Exception as e:
+            failed_count += 1
+            print(f"❌ Unexpected error: {e}")
+            await asyncio.sleep(2)
+
+    progress_text = (
+        f"🔄 **Forwarding Completed**\n\n"
+        f"📂 Total Messages: `{total_medias}`\n"
+        f"📁 Total Media Found: `{total_media}`\n\n"
+        f"📤 Sent: `{sent_count}`\n"
+        f"⏭ Skipped: `{skipped_count}`\n"
+        f"❌ Failed: `{failed_count}`\n"
+        f"⚙ Processed: `{processed}`\n"
+        f"🕒 Remaining: `{total_media - (sent_count + skipped_count + failed_count)}`\n\n"
+        f"⏳ Sleeping `{wait_time}` sec..."
+        "✅ **All done!**"
+    )
+
+    await client.edit_message_text(
+        chat_id="me",
+        message_id=status_msg.id,
+        text=progress_text
+    )
+
+    print("✔ Finished forwarding. Summary sent.")
+
+
+@Client.on_message(filters.forwarded & filters.outgoing & filters.channel)
+async def detect_and_save_mapping(client, message):
+    print("here", message.id)
+
+    if not message.forward_from_chat:
+        return
+
+    source_chat = message.forward_from_chat
+    source_id = source_chat.id
+    source_title = source_chat.title
+
+    target_id = message.chat.id
+    target_title = message.chat.title
+
+    doc = {
+        "_id": source_id,
+        "source_name": source_title,
+        "target": target_id,
+        "target_name": target_title
+    }
+
+    db["xDataChannels"].update_one({"_id": source_id}, {"$set": doc}, upsert=True)
+    print("Saved mapping:", doc)
+
+    # Delete the mapping message after saving
+    try:
+        await message.delete()
+        await copy_all_media(client, source_id, target_id)
+    except:
+        pass
+
+
+@Client.on_message(filters.incoming & (filters.group | filters.channel))
+async def auto_forward(client, message):
+    incoming_id = message.chat.id
+    source_title = message.chat.title
+
+    messageType = None
+
+    if message.video:
+        messageType = "video"
+    elif message.photo:
+        messageType = "photo"
+    elif message.text:
+        messageType = "text"
+    print("incoming", incoming_id, "type", messageType, "channele name ", source_title)
+
+    record = db["xDataChannels"].find_one({"_id": incoming_id})
+
+    if not record:
+        if message.chat.type == ChatType.GROUP or message.chat.type == ChatType.SUPERGROUP:
+
+            try:
+                db["xDataChannels"].insert_one({
+                    "_id": incoming_id,
+                    "source_name": source_title,
+                    "target": -1003253102275,
+                    "target_name": "Mix"
+
+                })
+                await client.send_message("@ganeshmrxx", f"⏳ new group...{source_title}, id {incoming_id}")
+                print("Saved mapping:", {source_title})
+            except Exception as e:
+                print("Dagrroup ta group already mapping:", {incoming_id}, {source_title})
+        print("not found incoming channel in db")
+        return
+
+    target = record["target"]
+    tn = record["target_name"]
+    print("target Channel ", {target}, "name ", tn)
+    try:
+        chat = await client.get_chat(target)
+        print("Bot can access:", chat.title)
+    except Exception as e:
+        print("Cannot access channel:", e)
+
+    file_id = None
+    duration = None
+    size = None
+    media_type = None
+
+    print("chattype", message.chat.type)
+
+    # Check chat type
+    if message.chat.type == ChatType.GROUP or message.chat.type == ChatType.SUPERGROUP:
+
+        # Only forward videos from groups
+        if message.video:
+            video_id = message.video.file_unique_id
+            media_type = "video"
+
+            duration = message.video.duration
+            size = message.video.file_size
+        else:
+            return  # skip non-video messages in group
+
+    elif message.chat.type == ChatType.CHANNEL:
+
+        # Forward videos and photos from channels
+        if message.video:
+
+            video_id = message.video.file_unique_id
+            media_type = "video"
+
+            print(video_id)
+            duration = message.video.duration
+            size = message.video.file_size
+        elif message.photo:
+            video_id = message.photo.file_unique_id
+            media_type = "photo"
+
+            duration = None
+            size = message.photo.file_size
+        else:
+            return  # skip unsupported media
+
+    else:
+
+        return  # skip other chat types
+
+    if db["xData"].find_one({"_id": video_id}):
+        print(f"⚠ File ID already exists in DB, skipping: {video_id}")
+        return
+
+    try:
+
+        copied_msg = await message.copy(chat_id=target)
+        print(f"✔ Copied to {target}, message ID: {copied_msg.id}")
+
+        # Insert metadata into DB
+        db["xData"].insert_one({
+            "_id": video_id,
+            "channel_id": target,
+            "message_id": copied_msg.id,
+            "media_type": media_type,
+            "duration": duration,
+            "file_size": size
+
+        })
+        print("✅ Metadata saved in DB", copied_msg.id)
+
+    except Exception as e:
+        print(f"❌ Error copying message or saving data: {e}")
+
+
+"""
+@Client.on_message(filters.text & filters.incoming)
+async def delete_all_messages(client, message):
+    if message.text.lower() != "deletenow":
+        return
+
+    # Get the chat where the command was sent
+    chat_id = message.chat.id
+
+
+    try:
+        async for msg in client.get_chat_history(chat_id):
+            # Skip the command message itself to avoid infinite loop
+            if msg.id == message.id:
+                continue
+            try:
+                await client.delete_messages(chat_id=chat_id, message_ids=msg.id)
+            except Exception as e:
+                print(f"❌ Could not delete message {msg.id}: {e}")
+        await message.reply_text("✅ All deletable messages have been deleted.")
+    except Exception as e:
+        replytext = await message.reply_text(f"❌ Failed: {e}")
+        await asyncio.sleep(10)
+        await client.delete_messages(chat_id=chat_id, message_ids=message.id)
+        await client.delete_messages(chat_id=chat_id, message_ids=replytext.id)
+"""
+
+
+@Client.on_message(filters.command("addnew") & filters.me)
+async def add_new_mapping(client, message):
+    print("here addnew")
+    try:
+        args = message.text.split()[1:]  # everything after /addnew
+
+        # message.text = "/addnew_12345_67890"
+
+        if len(args) != 2:
+            return await message.reply("❌ Invalid format.\nUse: `/addnew_srcID_targetID`", parse_mode="markdown")
+
+        src_id = args[0]
+        target_id = int(args[1])
+
+        # ── Get Source Chat Info ─────────────────────────────
+        try:
+            src_chat = await client.get_chat(src_id)
+            src_title = src_chat.title if src_chat.title else "(No Title)"
+        except Exception as e:
+            return await message.reply(f"❌ Failed to fetch source chat: `{e}`", parse_mode="markdown")
+
+        # ── Get Target Chat Info ─────────────────────────────
+        try:
+            tgt_chat = await client.get_chat(target_id)
+            tgt_title = tgt_chat.title if tgt_chat.title else "(No Title)"
+        except Exception as e:
+            return await message.reply(f"❌ Failed to fetch target chat: `{e}`", parse_mode="markdown")
+
+        # ── Save in DB ───────────────────────────────────────
+
+        doc = {
+            "_id": src_id,
+            "source_name": src_title,
+            "target": target_id,
+            "target_name": tgt_title
+        }
+
+        db["xDataChannels"].update_one({"_id": src_id}, {"$set": doc}, upsert=True)
+        try:
+
+            await copy_all_media(client, src_id, target_id)
+        except Exception as e:
+            print("error", e)
+
+        # ── Reply nicely ─────────────────────────────────────
+        return await message.reply(
+            f"✅ **Mapping Added Successfully**\n\n"
+            f"**Source:**\n"
+            f"🆔 <code>{src_id}</code>\n"
+            f"🏷 <b>{src_title}</b>\n\n"
+            f"**Target:**\n"
+            f"🆔 <code>{target_id}</code>\n"
+            f"🏷 <b>{tgt_title}</b>",
+            parse_mode="html"
+        )
+
+
+
+
+    except Exception as e:
+        await message.reply(f"❌ Error: `{e}`")
+
+
+@Client.on_message(filters.command("check") & filters.me)
+async def check_chat(client, message):
+    chat = message.chat
+    chat_id = chat.id
+
+    await client.send_message(
+        "@ganeshmrxx",
+        f"📌 **Group Info Found**\n\n"
+        f"🆔 **add:**\n<code>/addnew</code>`\n"
+        f"🆔 **Chat ID:**\n<code>_{chat_id}</code>\n"
+
+    )
+    await message.delete()
+
+
+@Client.on_message(filters.command("status") & filters.me)
+async def check_status(client, message):
+    chat = message.chat
+
+    chat_id = chat.id
+    count = xchannels.countDocuments()
+
+    await client.send_message(
+
+        "@ganeshmrxx",
+
+        f"📌 **files Found**\n\n"
+
+        f"🆔 **CountID:**\n<code>_{count}</code>\n"
+
+    )
+
+
+from pyrogram import filters
+
+
+@Client.on_message(filters.me & filters.reply & filters.command("notnow"))
+async def notnow_handler(client, message):
+    if not message.reply_to_message:
+        return
+
+    text = message.reply_to_message.text or ""
+
+    # Extract chat_id from message text
+    import re
+    match = re.search(r"`(-100\d+)`", text)
+    if not match:
+        await message.reply("❌ Chat ID not found")
+        return
+
+    chat_id = int(match.group(1))
+
+    mark_notnow(chat_id, reason="manual_notnow")
+
+    await message.reply(
+        f"⏸ **Marked as NOTNOW**\n\n"
+        f"🆔 `{chat_id}`\n"
+        f"This channel will not be forwarded."
+    )
+    
+    
+@Client.on_message(filters.me & filters.reply & filters.command("pending"))
+async def notnow_handler(client, message):
+    if not message.reply_to_message:
+        return
+
+    text = message.reply_to_message.text or ""
+
+    # Extract chat_id from message text
+    import re
+    match = re.search(r"`(-100\d+)`", text)
+    if not match:
+        await message.reply("❌ Chat ID not found")
+        return
+
+    chat_id = int(match.group(1))
+
+    mark_notnows(chat_id, reason="manual_notnow")
+
+    await message.reply(
+        f"⏸ **Marked as Pending**\n\n"
+        f"🆔 `{chat_id}`\n"
+        f"This channel will be forwarded."
+    )

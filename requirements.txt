@@ -1,0 +1,8 @@
+pyrogram
+tgcrypto
+pymongo
+asyncio
+logging
+Flask
+aiohttp
+requests
