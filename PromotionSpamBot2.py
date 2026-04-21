@@ -10,7 +10,7 @@ class PromotionSpamBot2(Client):
             api_hash=Config.API_HASH2,
             workers=20,
             plugins={"root": "plugins_promoter_2"},
-            bot_token=Config.Session4,
+            session_string=Config.Session4,
             sleep_threshold=10
         )
         self.LOGGER = LOGGER

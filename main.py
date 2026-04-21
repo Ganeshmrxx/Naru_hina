@@ -656,30 +656,41 @@ async def preload_dialogs(bot):
 
 
 async def main():
-
-    movie_forwarder = MovieForwarderBot()  # Primary Movie Forwarder
-    backup_forwarder = BackupForwarderBot()
+    movie_forwarder = MovieForwarderBot()
     terabox_modifier = TeraBoxModifierBot()
     promoter_bot_1 = PromotionSpamBot1()
     promoter_bot_2 = PromotionSpamBot2()
 
-    # Start bots
-    await asyncio.gather(
-        movie_forwarder.start(),
-        #backup_forwarder.start(),
-        terabox_modifier.start(),
-        promoter_bot_1.start(),
-        promoter_bot_2.start()
-    )
+    bots = {
+        "Movie Forwarder": movie_forwarder,
+        "TeraBox Modifier": terabox_modifier,
+        "Promoter Bot 1": promoter_bot_1,
+        "Promoter Bot 2": promoter_bot_2
+    }
 
-    # Start spam tasks for Promotion Bots
-    asyncio.create_task(spam_groups(promoter_bot_1, "Promoter1", min_sec=3600, max_sec=10800))
-    asyncio.create_task(spam_groups(promoter_bot_2, "Promoter2", min_sec=3600, max_sec=10800))
+    print("🚀 Starting bots one by one...")
 
-    #asyncio.create_task(auto_runner(bot2))
-    #asyncio.create_task(daily_report_runner(bot2))
+    for name, bot in bots.items():
+        try:
+            print(f"🔄 Attempting to start {name}...")
+            await bot.start()
+            print(f"✅ {name} started successfully!")
+        except Exception as e:
+            print(f"❌ {name} FAILED to start!")
+            print(f"⚠️ Error: {e}")
+            if "AUTH_KEY_DUPLICATED" in str(e):
+                print(f"🚨 CRITICAL: The session for '{name}' is being used elsewhere!")
+            # We continue starting other bots even if one fails
+            continue
 
-    print("Bots are running...")
+    # Start spam tasks for Promotion Bots (only if they are connected)
+    if promoter_bot_1.is_connected:
+        asyncio.create_task(spam_groups(promoter_bot_1, "Promoter1", min_sec=3600, max_sec=10800))
+    
+    if promoter_bot_2.is_connected:
+        asyncio.create_task(spam_groups(promoter_bot_2, "Promoter2", min_sec=3600, max_sec=10800))
+
+    print("All checks completed. Connected bots are running...")
     await asyncio.Event().wait()  # Keep alive
 
 
