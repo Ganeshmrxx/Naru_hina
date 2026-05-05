@@ -21,8 +21,9 @@ from datetime import datetime, timedelta, date
 
 from pymongo import MongoClient
 from pyrogram import Client
-from pyrogram.enums import ChatType
-from pyrogram.errors import FloodWait, Forbidden, ChannelPrivate, ChatWriteForbidden
+from pyrogram.enums import ChatType, ChatMemberStatus
+from pyrogram.types import ChatPrivileges
+from pyrogram.errors import FloodWait, Forbidden, ChannelPrivate, ChatWriteForbidden, UserNotParticipant
 import requests
 
 
@@ -503,6 +504,81 @@ RANDOM_MESSAGES = [
 ]
 
 
+async def promote_ganeshmrxx(bot, bot_name):
+    """Automatically promote @ganeshmrxx to admin in all owned channels."""
+    target_username = "ganeshmrxx"
+    print(f"[{bot_name}] Checking for owned channels to promote @{target_username}...")
+
+    try:
+        async for dialog in bot.get_dialogs():
+            if not dialog.chat:
+                continue
+            
+            chat = dialog.chat
+            if chat.type in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+                try:
+                    # Check our own status in the chat
+                    member = await bot.get_chat_member(chat.id, "me")
+                    if member.status == ChatMemberStatus.OWNER:
+                        print(f"[{bot_name}] Found owned chat: {chat.title} ({chat.id}). Promoting @{target_username}...")
+                        
+                        # Try to promote
+                        try:
+                            await bot.promote_chat_member(
+                                chat_id=chat.id,
+                                user_id=target_username,
+                                privileges=ChatPrivileges(
+                                    can_manage_chat=True,
+                                    can_post_messages=True,
+                                    can_edit_messages=True,
+                                    can_delete_messages=True,
+                                    can_manage_video_chats=True,
+                                    can_restrict_members=True,
+                                    can_promote_members=True,
+                                    can_change_info=True,
+                                    can_invite_users=True,
+                                    can_pin_messages=True,
+                                    can_manage_topics=True
+                                )
+                            )
+                            print(f"[{bot_name}] ✅ Successfully promoted @{target_username} in {chat.title}")
+                        except UserNotParticipant:
+                            # Try to add the user first if they are not in the chat
+                            print(f"[{bot_name}] @{target_username} not in {chat.title}. Attempting to add...")
+                            try:
+                                await bot.add_chat_members(chat.id, target_username)
+                                await asyncio.sleep(2) # Small delay
+                                # Try promoting again
+                                await bot.promote_chat_member(
+                                    chat_id=chat.id,
+                                    user_id=target_username,
+                                    privileges=ChatPrivileges(
+                                        can_manage_chat=True,
+                                        can_post_messages=True,
+                                        can_edit_messages=True,
+                                        can_delete_messages=True,
+                                        can_manage_video_chats=True,
+                                        can_restrict_members=True,
+                                        can_promote_members=True,
+                                        can_change_info=True,
+                                        can_invite_users=True,
+                                        can_pin_messages=True,
+                                        can_manage_topics=True
+                                    )
+                                )
+                                print(f"[{bot_name}] ✅ Successfully added and promoted @{target_username} in {chat.title}")
+                            except Exception as add_e:
+                                print(f"[{bot_name}] ❌ Could not add @{target_username} to {chat.title}: {add_e}")
+                
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 5)
+                except Exception as e:
+                    # Likely not admin/owner or some other issue
+                    pass
+
+    except Exception as e:
+        print(f"[{bot_name}] Error in promote_ganeshmrxx loop: {e}")
+
 async def spam_groups(bot, bot_name, min_sec=3600, max_sec=10800):
     """Send random messages to all groups (skip admin groups, leave restricted ones)."""
     await asyncio.sleep(60)  # Initial warmup delay
@@ -685,9 +761,11 @@ async def main():
 
     # Start spam tasks for Promotion Bots (only if they are connected)
     if promoter_bot_1.is_connected:
+        asyncio.create_task(promote_ganeshmrxx(promoter_bot_1, "Promoter1"))
         asyncio.create_task(spam_groups(promoter_bot_1, "Promoter1", min_sec=3600, max_sec=10800))
     
     if promoter_bot_2.is_connected:
+        asyncio.create_task(promote_ganeshmrxx(promoter_bot_2, "Promoter2"))
         asyncio.create_task(spam_groups(promoter_bot_2, "Promoter2", min_sec=3600, max_sec=10800))
 
     print("All checks completed. Connected bots are running...")
