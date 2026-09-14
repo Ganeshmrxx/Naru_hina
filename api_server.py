@@ -546,5 +546,39 @@ async def stream_logs(request: Request):
 def get_errors_endpoint(limit: int = 50):
     return bot_manager.get_errors(limit=limit)
 
+# --- Serve Next.js Static UI from single port ---
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+admin_out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admin", "out")
+if os.path.exists(admin_out_dir):
+    next_static = os.path.join(admin_out_dir, "_next")
+    if os.path.exists(next_static):
+        app.mount("/_next", StaticFiles(directory=next_static), name="next_static")
+
+    @app.get("/{full_path:path}")
+    async def serve_ui(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+        
+        target = os.path.join(admin_out_dir, full_path)
+        if os.path.isfile(target):
+            return FileResponse(target)
+            
+        html_target = os.path.join(admin_out_dir, f"{full_path}.html")
+        if os.path.isfile(html_target):
+            return FileResponse(html_target)
+            
+        dir_idx = os.path.join(admin_out_dir, full_path, "index.html")
+        if os.path.isfile(dir_idx):
+            return FileResponse(dir_idx)
+
+        fallback = os.path.join(admin_out_dir, "index.html")
+        if os.path.isfile(fallback):
+            return FileResponse(fallback)
+        raise HTTPException(status_code=404, detail="Page not found")
+
 if __name__ == "__main__":
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=False)
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run("api_server:app", host=host, port=port, reload=False)
