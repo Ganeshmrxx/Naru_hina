@@ -579,6 +579,9 @@ if os.path.exists(admin_out_dir):
         raise HTTPException(status_code=404, detail="Page not found")
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
+    # Support Bot-Hosting SERVER_PORT as well as standard PORT
+    port_str = os.getenv("SERVER_PORT") or os.getenv("PORT") or "8000"
+    port = int(port_str)
     host = os.getenv("HOST", "0.0.0.0")
+    print(f"Starting AllForward API & UI server on http://{host}:{port} (SERVER_PORT={os.getenv('SERVER_PORT')})...")
     uvicorn.run("api_server:app", host=host, port=port, reload=False)
