@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowRightLeft, Plus, Trash2, Play, RefreshCw, Layers, CheckCircle2,
-  AlertTriangle, Filter, ExternalLink
+  AlertTriangle, Filter, ExternalLink, Radio
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -209,6 +209,32 @@ export default function ForwardingPage() {
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-blue-400' : ''}`} />
           </button>
         </div>
+      </div>
+
+      {/* Visual Telegram Router Callout */}
+      <div className="bg-gradient-to-r from-blue-900/30 via-indigo-900/20 to-purple-900/30 border border-blue-500/30 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3.5">
+          <div className="p-3 rounded-xl bg-blue-500/20 text-blue-400">
+            <Radio className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              Telegram-Style Visual Channel Router
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                Interactive UI
+              </span>
+            </h2>
+            <p className="text-xs text-gray-300 mt-1">
+              Browse all Telegram channels in your account, see which ones you are Admin in, and click to set or change target channels with automatic real-time and historical forwarding!
+            </p>
+          </div>
+        </div>
+        <Link
+          href="/bots/backup-forwarder"
+          className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shadow-lg flex-shrink-0"
+        >
+          Open Visual Channel Router &rarr;
+        </Link>
       </div>
 
       {/* SECTION 1: Channel Mappings */}

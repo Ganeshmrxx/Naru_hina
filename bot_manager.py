@@ -131,6 +131,8 @@ class BotManager:
         self.promote_enabled = {"promoter_1": True, "promoter_2": True}
         self.background_tasks = {}
         self.forward_jobs = {}  # In-memory tracking for active bulk forward jobs
+        self.dialogs_cache = []
+        self.dialogs_cache_time = 0
         self._heartbeat_task = None
 
     def start_heartbeat(self):
@@ -254,8 +256,8 @@ class BotManager:
         return self.status
 
     async def start_all(self):
-        # Default bots started by main.py
-        default_bots = ["movie_forwarder", "terabox_modifier", "promoter_1", "promoter_2"]
+        # Default bots started by main.py plus backup_forwarder for real-time channel routing
+        default_bots = ["movie_forwarder", "terabox_modifier", "promoter_1", "promoter_2", "backup_forwarder"]
         for bot_id in default_bots:
             await self.start_bot(bot_id)
             await asyncio.sleep(2)
@@ -408,3 +410,167 @@ class BotManager:
             self.forward_jobs[job_id]["status"] = "stopped"
             return {"status": "Job stopped", "job_id": job_id}
         return {"error": "Job not found"}
+
+    async def get_telegram_dialogs(self, bot_id: str = "backup_forwarder", force_refresh: bool = False, db_b = None) -> list:
+        if not force_refresh and self.dialogs_cache and (time.time() - self.dialogs_cache_time < 300):
+            if db_b is not None:
+                self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+            return self.dialogs_cache
+
+        client = None
+        for candidate_id in [bot_id, "backup_forwarder", "movie_forwarder", "promoter_1", "promoter_2"]:
+            inst = self.bots[candidate_id].get("instance")
+            if inst and getattr(inst, "is_connected", False):
+                client = inst
+                break
+
+        if client is None:
+            await self.start_bot("backup_forwarder")
+            await asyncio.sleep(2)
+            client = self.bots["backup_forwarder"].get("instance")
+
+        dialogs = []
+        if client and getattr(client, "is_connected", False):
+            try:
+                from pyrogram.enums import ChatType, ChatMemberStatus
+                try:
+                    me = await client.get_me()
+                    my_id = me.id
+                except Exception:
+                    my_id = None
+
+                raw_dialogs = []
+                async for d in client.get_dialogs(limit=200):
+                    chat = d.chat
+                    if chat.type not in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
+                        continue
+                    raw_dialogs.append(d)
+
+                for d in raw_dialogs:
+                    chat = d.chat
+                    title = str(chat.title or "Untitled").encode("ascii", errors="ignore").decode("ascii").strip()
+                    if not title:
+                        title = f"Chat {chat.id}"
+                    
+                    is_creator = bool(getattr(chat, "is_creator", False))
+                    type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                    
+                    dialogs.append({
+                        "id": chat.id,
+                        "title": title,
+                        "username": getattr(chat, "username", None),
+                        "type": type_str,
+                        "is_creator": is_creator,
+                        "is_admin": is_creator,
+                        "can_post": is_creator,
+                        "members_count": getattr(chat, "members_count", None),
+                        "is_mapped": False,
+                        "target_id": None,
+                        "target_name": None
+                    })
+
+                # Admin check for non-creator channels
+                if my_id:
+                    for d in dialogs:
+                        if d["type"] == "channel" and not d["is_creator"]:
+                            try:
+                                member = await client.get_chat_member(d["id"], my_id)
+                                if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                                    d["is_admin"] = True
+                                    d["can_post"] = True
+                            except Exception:
+                                pass
+
+            except Exception as e:
+                logging.error(f"Error fetching telegram dialogs: {e}")
+
+        if db_b is not None:
+            self._enrich_dialogs_with_db(dialogs, db_b)
+
+        if dialogs:
+            self.dialogs_cache = dialogs
+            self.dialogs_cache_time = time.time()
+
+        return dialogs
+
+    def _enrich_dialogs_with_db(self, dialogs: list, db_b):
+        try:
+            mappings = list(db_b.xDataChannels.find({}))
+            mapped_map = {}
+            for m in mappings:
+                src = m.get("_id")
+                try:
+                    src_int = int(src)
+                except Exception:
+                    src_int = src
+                mapped_map[src_int] = m
+
+            existing_ids = set()
+            for d in dialogs:
+                existing_ids.add(d["id"])
+                if d["id"] in mapped_map:
+                    m = mapped_map[d["id"]]
+                    d["is_mapped"] = True
+                    d["target_id"] = m.get("target")
+                    d["target_name"] = m.get("target_name")
+
+            for src_id, m in mapped_map.items():
+                if src_id not in existing_ids:
+                    dialogs.append({
+                        "id": src_id if isinstance(src_id, int) else int(src_id) if str(src_id).lstrip("-").isdigit() else src_id,
+                        "title": m.get("source_name") or f"Chat {src_id}",
+                        "username": None,
+                        "type": "channel",
+                        "is_creator": False,
+                        "is_admin": False,
+                        "can_post": False,
+                        "members_count": None,
+                        "is_mapped": True,
+                        "target_id": m.get("target"),
+                        "target_name": m.get("target_name")
+                    })
+        except Exception as e:
+            logging.error(f"Error enriching dialogs with DB: {e}")
+
+    async def set_channel_mapping(self, source_id: int, source_name: str, target_id: int, target_name: str, forward_history: bool = True, db_b = None) -> dict:
+        if db_b is None:
+            return {"error": "Database not connected"}
+        
+        doc = {
+            "_id": source_id,
+            "source_name": source_name,
+            "target": target_id,
+            "target_name": target_name,
+            "updated_at": datetime.now().isoformat()
+        }
+        db_b.xDataChannels.update_one({"_id": source_id}, {"$set": doc}, upsert=True)
+        # Invalidate dialogs cache so UI reflects immediately
+        self.dialogs_cache = []
+        self.dialogs_cache_time = 0
+
+        # Ensure backup_forwarder is running for live incoming messages
+        if not self.status["backup_forwarder"]["is_running"]:
+            asyncio.create_task(self.start_bot("backup_forwarder"))
+
+        job_info = None
+        if forward_history:
+            job_info = await self.start_bulk_forward_job(source_id=source_id, target_id=target_id)
+
+        return {
+            "success": True,
+            "mapping": {
+                "source_id": source_id,
+                "source_name": source_name,
+                "target_id": target_id,
+                "target_name": target_name
+            },
+            "job": job_info
+        }
+
+    async def remove_channel_mapping(self, source_id: int, db_b = None) -> dict:
+        if db_b is not None:
+            db_b.xDataChannels.delete_one({"_id": source_id})
+            db_b.xDataChannels.delete_one({"_id": str(source_id)})
+        self.dialogs_cache = []
+        self.dialogs_cache_time = 0
+        return {"success": True, "source_id": source_id}

@@ -72,3 +72,17 @@ export interface ApiResponse<T> {
   data?: T;
   error?: string;
 }
+
+export interface TelegramDialog {
+  id: number;
+  title: string;
+  username: string | null;
+  type: 'channel' | 'group' | string;
+  is_creator: boolean;
+  is_admin: boolean;
+  can_post: boolean;
+  members_count: number | null;
+  is_mapped: boolean;
+  target_id: number | null;
+  target_name: string | null;
+}

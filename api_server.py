@@ -10,16 +10,26 @@ except RuntimeError:
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError, jwt
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
+from bot_manager import BotManager
+try:
+    from jose import JWTError, jwt
+except ImportError:
+    try:
+        import jwt
+        from jwt.exceptions import PyJWTError as JWTError
+    except ImportError:
+        jwt = None
+        class JWTError(Exception):
+            pass
 from pydantic import BaseModel
 import uvicorn
-import aiohttp
-from sse_starlette.sse import EventSourceResponse
-
-from bot_manager import BotManager
+try:
+    from sse_starlette.sse import EventSourceResponse
+except ImportError:
+    EventSourceResponse = None
 
 # Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -151,7 +161,7 @@ def get_stats():
         "running_bots": sum(1 for s in bot_manager.status.values() if s.get("is_running")),
         "errors": len(bot_manager.error_buffer)
     }
-    if not db_a:
+    if db_a is None:
         return default_stats
     
     try:
@@ -166,7 +176,7 @@ def get_stats():
 
 @app.get("/api/stats/history", dependencies=[Depends(verify_token)])
 def get_stats_history(days: int = Query(7, ge=1, le=90)):
-    if not db_a:
+    if db_a is None:
         return []
     try:
         docs = list(db_a.daily_summary.find({}, {"_id": 0}).sort("date", -1).limit(days))
@@ -252,7 +262,7 @@ class ChatCreateRequest(BaseModel):
 
 @app.get("/api/forwarding/chats", dependencies=[Depends(verify_token)])
 def get_forwarding_chats(status: Optional[str] = None):
-    if not db_a:
+    if db_a is None:
         return []
     query = {}
     if status and status != "all":
@@ -262,7 +272,7 @@ def get_forwarding_chats(status: Optional[str] = None):
 
 @app.post("/api/forwarding/chats", dependencies=[Depends(verify_token)])
 def add_forwarding_chat(req: ChatCreateRequest):
-    if not db_a:
+    if db_a is None:
         raise HTTPException(status_code=500, detail="Cluster A not connected")
     db_a.chats.update_one(
         {"chat_id": req.chat_id},
@@ -280,7 +290,7 @@ def add_forwarding_chat(req: ChatCreateRequest):
 
 @app.post("/api/forwarding/chats/{chat_id}/status", dependencies=[Depends(verify_token)])
 def update_chat_status(chat_id: int, req: ChatStatusUpdate):
-    if not db_a:
+    if db_a is None:
         raise HTTPException(status_code=500, detail="Cluster A not connected")
     result = db_a.chats.update_one({"chat_id": chat_id}, {"$set": {"status": req.status}})
     if result.matched_count == 0:
@@ -290,7 +300,7 @@ def update_chat_status(chat_id: int, req: ChatStatusUpdate):
 
 @app.delete("/api/forwarding/chats/{chat_id}", dependencies=[Depends(verify_token)])
 def delete_chat(chat_id: int):
-    if not db_a:
+    if db_a is None:
         raise HTTPException(status_code=500, detail="Cluster A not connected")
     db_a.chats.delete_one({"chat_id": chat_id})
     db_a.chats.delete_one({"chat_id": str(chat_id)})
@@ -300,7 +310,7 @@ def delete_chat(chat_id: int):
 
 @app.get("/api/forwarding/progress", dependencies=[Depends(verify_token)])
 def get_progress():
-    if not db_a:
+    if db_a is None:
         return []
     docs = list(db_a.forward_progress.find({}, {"_id": 0}))
     return docs
@@ -348,7 +358,7 @@ class MappingCreateRequest(BaseModel):
 
 @app.get("/api/mappings", dependencies=[Depends(verify_token)])
 def get_mappings():
-    if not db_b:
+    if db_b is None:
         return []
     docs = list(db_b.xDataChannels.find({}))
     # Clean MongoDB _id for JSON serialization
@@ -359,7 +369,7 @@ def get_mappings():
 
 @app.post("/api/mappings", dependencies=[Depends(verify_token)])
 def create_mapping(req: MappingCreateRequest):
-    if not db_b:
+    if db_b is None:
         raise HTTPException(status_code=500, detail="Cluster B not connected")
     doc = {
         "_id": req.source_id,
@@ -373,7 +383,7 @@ def create_mapping(req: MappingCreateRequest):
 
 @app.delete("/api/mappings/{source_id}", dependencies=[Depends(verify_token)])
 def delete_mapping(source_id: int):
-    if not db_b:
+    if db_b is None:
         raise HTTPException(status_code=500, detail="Cluster B not connected")
     res = db_b.xDataChannels.delete_one({"_id": source_id})
     if res.deleted_count == 0:
@@ -382,7 +392,7 @@ def delete_mapping(source_id: int):
 
 @app.post("/api/mappings/{source_id}/copy", dependencies=[Depends(verify_token)])
 async def trigger_mapping_copy(source_id: int):
-    if not db_b:
+    if db_b is None:
         raise HTTPException(status_code=500, detail="Cluster B not connected")
     mapping = db_b.xDataChannels.find_one({"_id": source_id})
     if not mapping:
@@ -394,11 +404,56 @@ async def trigger_mapping_copy(source_id: int):
     job = await bot_manager.start_bulk_forward_job(source_id=source_id, target_id=target_id)
     return job
 
+# --- Telegram Live Dialogs & Interactive Channel Router ---
+class TelegramSetTargetRequest(BaseModel):
+    source_id: int
+    source_name: str
+    target_id: int
+    target_name: str
+    forward_history: bool = True
+
+@app.get("/api/telegram/dialogs", dependencies=[Depends(verify_token)])
+async def get_telegram_dialogs(bot_id: str = "backup_forwarder", refresh: bool = False):
+    return await bot_manager.get_telegram_dialogs(bot_id=bot_id, force_refresh=refresh, db_b=db_b)
+
+@app.post("/api/telegram/set-target", dependencies=[Depends(verify_token)])
+async def set_telegram_target(req: TelegramSetTargetRequest):
+    if db_b is None:
+        raise HTTPException(status_code=500, detail="Cluster B not connected")
+    res = await bot_manager.set_channel_mapping(
+        source_id=req.source_id,
+        source_name=req.source_name,
+        target_id=req.target_id,
+        target_name=req.target_name,
+        forward_history=req.forward_history,
+        db_b=db_b
+    )
+    return res
+
+@app.delete("/api/telegram/target/{source_id}", dependencies=[Depends(verify_token)])
+async def remove_telegram_target(source_id: int):
+    if db_b is None:
+        raise HTTPException(status_code=500, detail="Cluster B not connected")
+    return await bot_manager.remove_channel_mapping(source_id=source_id, db_b=db_b)
+
+@app.post("/api/telegram/sync/{source_id}", dependencies=[Depends(verify_token)])
+async def sync_telegram_history(source_id: int):
+    if db_b is None:
+        raise HTTPException(status_code=500, detail="Cluster B not connected")
+    mapping = db_b.xDataChannels.find_one({"_id": source_id})
+    if not mapping:
+        mapping = db_b.xDataChannels.find_one({"_id": str(source_id)})
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Mapping not found")
+    target_id = mapping.get("target")
+    job = await bot_manager.start_bulk_forward_job(source_id=source_id, target_id=target_id)
+    return job
+
 # --- Channels & Groups (Aggregated from DB) ---
 @app.get("/api/channels", dependencies=[Depends(verify_token)])
 def get_all_channels():
     channels = []
-    if db_a:
+    if db_a is not None:
         try:
             for chat in db_a.chats.find({}, {"_id": 0}):
                 channels.append({
@@ -412,7 +467,7 @@ def get_all_channels():
         except Exception as e:
             print(f"Error fetching from chats: {e}")
 
-    if db_b:
+    if db_b is not None:
         try:
             for mapping in db_b.xDataChannels.find({}):
                 channels.append({
@@ -438,20 +493,20 @@ def db_status():
             "name": "Cluster 0 (Main Forwarder)",
             "connected": db_a is not None,
             "collections": {
-                "chats": {"count": db_a.chats.count_documents({}) if db_a else 0, "status": "active"},
-                "forward_progress": {"count": db_a.forward_progress.count_documents({}) if db_a else 0, "status": "active"},
-                "media_store": {"count": db_a.media_store.count_documents({}) if db_a else 0, "status": "active"},
-                "daily_summary": {"count": db_a.daily_summary.count_documents({}) if db_a else 0, "status": "active"},
+                "chats": {"count": db_a.chats.count_documents({}) if db_a is not None else 0, "status": "active"},
+                "forward_progress": {"count": db_a.forward_progress.count_documents({}) if db_a is not None else 0, "status": "active"},
+                "media_store": {"count": db_a.media_store.count_documents({}) if db_a is not None else 0, "status": "active"},
+                "daily_summary": {"count": db_a.daily_summary.count_documents({}) if db_a is not None else 0, "status": "active"},
             }
         },
         "cluster_b": {
             "name": "Cluster 0 (Plugins & Media)",
             "connected": db_b is not None,
             "collections": {
-                "xData": {"count": db_b.xData.count_documents({}) if db_b else 0, "status": "active"},
-                "xDataChannels": {"count": db_b.xDataChannels.count_documents({}) if db_b else 0, "status": "active"},
-                "newMovieDatas2": {"count": db_b.newMovieDatas2.count_documents({}) if db_b else 0, "status": "active"},
-                "terabotsearch": {"count": db_b.terabotsearch.count_documents({}) if db_b else 0, "status": "active"},
+                "xData": {"count": db_b.xData.count_documents({}) if db_b is not None else 0, "status": "active"},
+                "xDataChannels": {"count": db_b.xDataChannels.count_documents({}) if db_b is not None else 0, "status": "active"},
+                "newMovieDatas2": {"count": db_b.newMovieDatas2.count_documents({}) if db_b is not None else 0, "status": "active"},
+                "terabotsearch": {"count": db_b.terabotsearch.count_documents({}) if db_b is not None else 0, "status": "active"},
             }
         }
     }
@@ -461,7 +516,7 @@ def db_status():
 def get_collection_data(name: str, limit: int = Query(20, ge=1, le=100)):
     records = []
     # Check cluster A
-    if db_a and name in ["chats", "forward_progress", "media_store", "daily_summary"]:
+    if db_a is not None and name in ["chats", "forward_progress", "media_store", "daily_summary"]:
         coll = db_a[name]
         for doc in coll.find().sort("_id", -1).limit(limit):
             doc["_id"] = str(doc.get("_id"))
@@ -469,7 +524,7 @@ def get_collection_data(name: str, limit: int = Query(20, ge=1, le=100)):
         return records
 
     # Check cluster B
-    if db_b and name in ["xData", "xDataChannels", "newMovieDatas2", "terabotsearch"]:
+    if db_b is not None and name in ["xData", "xDataChannels", "newMovieDatas2", "terabotsearch"]:
         coll = db_b[name]
         for doc in coll.find().sort("_id", -1).limit(limit):
             doc["_id"] = str(doc.get("_id"))

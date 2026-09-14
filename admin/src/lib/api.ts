@@ -239,6 +239,36 @@ class ApiClient {
     });
   }
 
+  // Telegram Live Dialogs & Interactive Channel Router
+  async getTelegramDialogs(refresh: boolean = false, botId: string = 'backup_forwarder') {
+    return this.request<import('./types').TelegramDialog[]>(`/api/telegram/dialogs?bot_id=${botId}&refresh=${refresh}`);
+  }
+
+  async setTelegramTarget(data: {
+    source_id: number;
+    source_name: string;
+    target_id: number;
+    target_name: string;
+    forward_history: boolean;
+  }) {
+    return this.request<{ success: boolean; mapping: unknown; job?: unknown }>('/api/telegram/set-target', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async removeTelegramTarget(sourceId: number) {
+    return this.request<{ success: boolean; source_id: number }>(`/api/telegram/target/${sourceId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async syncTelegramHistory(sourceId: number) {
+    return this.request<Record<string, unknown>>(`/api/telegram/sync/${sourceId}`, {
+      method: 'POST',
+    });
+  }
+
   // Errors
   async getErrors(limit: number = 50) {
     return this.request<Record<string, unknown>[]>(`/api/errors?limit=${limit}`);
