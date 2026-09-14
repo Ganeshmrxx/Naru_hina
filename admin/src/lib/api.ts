@@ -1,4 +1,14 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
+function getApiUrl(): string {
+  if (typeof window !== 'undefined') {
+    // If running standalone Next.js dev server on port 3000, point to local backend port 8000
+    if (window.location.port === '3000') {
+      return 'http://localhost:8000';
+    }
+    // On any production domain (e.g. apps.bot-hosting.cloud) use same-origin relative path
+    return '';
+  }
+  return '';
+}
 
 class ApiClient {
   private token: string | null = null;
@@ -35,7 +45,8 @@ class ApiClient {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const res = await fetch(`${API_URL}${path}`, {
+    const baseUrl = getApiUrl();
+    const res = await fetch(`${baseUrl}${path}`, {
       ...options,
       headers,
     });

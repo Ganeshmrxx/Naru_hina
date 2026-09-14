@@ -15,12 +15,12 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     setLoading(true);
-    const ok = await login(username, password);
+    const res = await login(username, password);
     setLoading(false);
-    if (ok) {
+    if (res.success) {
       router.push('/dashboard');
     } else {
-      setError('Invalid credentials');
+      setError(res.error || 'Invalid credentials');
     }
   };
 

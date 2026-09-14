@@ -4,12 +4,12 @@ export function isAuthenticated(): boolean {
   return !!api.getToken();
 }
 
-export async function login(username: string, password: string): Promise<boolean> {
+export async function login(username: string, password: string): Promise<{ success: boolean; error?: string }> {
   try {
     await api.login(username, password);
-    return true;
-  } catch {
-    return false;
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Invalid credentials' };
   }
 }
 
