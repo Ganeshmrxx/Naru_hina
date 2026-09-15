@@ -269,6 +269,12 @@ class ApiClient {
     });
   }
 
+  async cleanDeadChannels() {
+    return this.request<{ success: boolean; deleted_count: number; remaining_live: number }>('/api/telegram/clean-dead-channels', {
+      method: 'POST',
+    });
+  }
+
   // Errors
   async getErrors(limit: number = 50) {
     return this.request<Record<string, unknown>[]>(`/api/errors?limit=${limit}`);

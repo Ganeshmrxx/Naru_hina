@@ -6,7 +6,7 @@ import {
   HardDrive, Play, Square, RotateCw, RefreshCw, ArrowLeft,
   Plus, CheckCircle2, AlertCircle, ShieldCheck, ScrollText, Radio,
   ArrowRightLeft, ArrowRight, Search, Users, Edit3, Trash2,
-  Send, Zap, Crown, Check, X
+  Send, Zap, Crown, Check, X, AlertTriangle, Sparkles
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -49,10 +49,11 @@ export default function BackupForwarderDetailPage() {
   const [loading, setLoading] = useState(true);
   const [refreshingDialogs, setRefreshingDialogs] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [cleaningDead, setCleaningDead] = useState(false);
 
-  // Search & Filter state
+  // Search & Filter state - Default to 'live' to show real-time active channels
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'all' | 'mapped' | 'admin' | 'unmapped'>('all');
+  const [activeTab, setActiveTab] = useState<'live' | 'mapped' | 'admin' | 'dead' | 'all'>('live');
 
   // Target Selection Modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -67,6 +68,9 @@ export default function BackupForwarderDetailPage() {
   // Unlink Confirm state
   const [unlinkConfirmOpen, setUnlinkConfirmOpen] = useState(false);
   const [unlinkSourceId, setUnlinkSourceId] = useState<number | null>(null);
+
+  // Clean Dead Confirm state
+  const [cleanDeadConfirmOpen, setCleanDeadConfirmOpen] = useState(false);
 
   // Bot Stop/Restart Confirm state
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -219,6 +223,21 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
+  // Clean Dead Channels
+  const handleCleanDeadChannels = async () => {
+    setCleanDeadConfirmOpen(false);
+    setCleaningDead(true);
+    try {
+      const res = await api.cleanDeadChannels();
+      toast('success', `Cleaned ${res.deleted_count} dead/stale channels from database!`);
+      await fetchData(true);
+    } catch (e: unknown) {
+      toast('error', e instanceof Error ? e.message : 'Failed to clean dead channels');
+    } finally {
+      setCleaningDead(false);
+    }
+  };
+
   // Re-sync Past Messages
   const handleResync = async (sourceId: number, sourceTitle: string) => {
     try {
@@ -241,13 +260,20 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
+  // Counts
+  const liveCount = useMemo(() => dialogs.filter((d) => d.is_live !== false).length, [dialogs]);
+  const deadCount = useMemo(() => dialogs.filter((d) => d.is_live === false).length, [dialogs]);
+  const mappedCount = useMemo(() => dialogs.filter((d) => d.is_mapped && d.is_live !== false).length, [dialogs]);
+  const adminCount = useMemo(() => dialogs.filter((d) => d.is_admin && d.is_live !== false).length, [dialogs]);
+
   // Filter dialogs for main list
   const filteredDialogs = useMemo(() => {
     return dialogs.filter((d) => {
       // Tab filter
-      if (activeTab === 'mapped' && !d.is_mapped) return false;
-      if (activeTab === 'admin' && !d.is_admin) return false;
-      if (activeTab === 'unmapped' && d.is_mapped) return false;
+      if (activeTab === 'live' && d.is_live === false) return false;
+      if (activeTab === 'mapped' && (!d.is_mapped || d.is_live === false)) return false;
+      if (activeTab === 'admin' && (!d.is_admin || d.is_live === false)) return false;
+      if (activeTab === 'dead' && d.is_live !== false) return false;
 
       // Search filter
       if (searchQuery.trim()) {
@@ -262,12 +288,14 @@ export default function BackupForwarderDetailPage() {
     });
   }, [dialogs, activeTab, searchQuery]);
 
-  // Candidates for Target Selection Modal
+  // Candidates for Target Selection Modal (Exclude dead channels)
   const candidateTargets = useMemo(() => {
     if (!selectedSource) return [];
     return dialogs.filter((d) => {
       // Cannot forward to oneself
       if (d.id === selectedSource.id) return false;
+      // Do not allow dead channels as targets
+      if (d.is_live === false) return false;
       // Filter by admin if toggled
       if (onlyAdminTargets && !d.is_admin) return false;
       // Search inside modal
@@ -285,8 +313,6 @@ export default function BackupForwarderDetailPage() {
   if (loading) return <LoadingState message="Loading Telegram channels & routing setup..." />;
 
   const isRunning = Boolean(bot?.is_running);
-  const mappedCount = dialogs.filter((d) => d.is_mapped).length;
-  const adminCount = dialogs.filter((d) => d.is_admin).length;
   const runningJobs = jobs.filter((j) => j.status === 'running');
 
   return (
@@ -312,7 +338,7 @@ export default function BackupForwarderDetailPage() {
               <StatusBadge status={isRunning ? 'online' : 'offline'} />
             </div>
             <p className="text-xs text-gray-400 mt-1">
-              Visual Telegram-style router powered by Backup Forwarder Userbot (<code className="text-blue-300">@ganeshmrxx</code>)
+              Live Telegram channel router powered by Backup Forwarder (<code className="text-blue-300">@ganeshmrxx</code>)
             </p>
           </div>
         </div>
@@ -356,11 +382,11 @@ export default function BackupForwarderDetailPage() {
           <button
             onClick={() => fetchData(true)}
             disabled={refreshingDialogs}
-            title="Refresh channels directly from Telegram"
+            title="Perform live real-time query to Telegram servers"
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#0d1117] border border-[#1f2937] text-gray-300 hover:text-white text-xs font-medium transition-colors"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshingDialogs ? 'animate-spin text-blue-400' : ''}`} />
-            <span>Sync Telegram</span>
+            <span>Live Telegram Sync</span>
           </button>
         </div>
       </div>
@@ -368,29 +394,72 @@ export default function BackupForwarderDetailPage() {
       {/* Metrics Row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
-          <p className="text-xs text-gray-400">Total Telegram Chats</p>
-          <p className="text-xl font-mono font-bold text-white mt-1">{dialogs.length}</p>
-          <p className="text-[11px] text-gray-500 mt-1">Discovered in account</p>
+          <p className="text-xs text-gray-400">Live Telegram Channels</p>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-white">{liveCount}</span>
+            <span className="text-[10px] text-emerald-400 font-medium">Real-Time Verified</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">Active in your account</p>
         </div>
 
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
           <p className="text-xs text-gray-400">Active Forwarding Mappings</p>
-          <p className="text-xl font-mono font-bold text-emerald-400 mt-1">{mappedCount}</p>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-emerald-400">{mappedCount}</span>
+            <span className="text-[10px] text-gray-400">Live</span>
+          </div>
           <p className="text-[11px] text-gray-500 mt-1">Routing to targets in real-time</p>
         </div>
 
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
           <p className="text-xs text-gray-400">My Admin / Target Channels</p>
-          <p className="text-xl font-mono font-bold text-purple-400 mt-1">{adminCount}</p>
-          <p className="text-[11px] text-gray-500 mt-1">Channels where user has post rights</p>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-purple-400">{adminCount}</span>
+            <span className="text-[10px] text-amber-300 flex items-center gap-0.5">
+              <Crown className="w-2.5 h-2.5" /> Owner
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">Channels where you can post</p>
         </div>
 
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
-          <p className="text-xs text-gray-400">History Media Replicated</p>
-          <p className="text-xl font-mono font-bold text-blue-400 mt-1">{xDataCount.toLocaleString()}</p>
-          <p className="text-[11px] text-gray-500 mt-1">Unique files in xData DB</p>
+          <p className="text-xs text-gray-400">Dead / Left Channels</p>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className={`text-xl font-mono font-bold ${deadCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>
+              {deadCount}
+            </span>
+            {deadCount > 0 && <span className="text-[10px] text-red-400">Stale in DB</span>}
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">Banned/deleted by Telegram</p>
         </div>
       </div>
+
+      {/* Dead / Stale Channels Cleanup Banner */}
+      {deadCount > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-amber-500/20 text-amber-400 flex-shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-xs font-semibold text-white flex items-center gap-2">
+                {deadCount} Inaccessible / Dead Channels in MongoDB
+              </h4>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                These channels are saved in MongoDB mappings, but they are no longer in your Telegram account (deleted, banned, or you left them).
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setCleanDeadConfirmOpen(true)}
+            disabled={cleaningDead}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 text-xs font-medium transition-colors whitespace-nowrap shadow-sm"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            {cleaningDead ? 'Cleaning...' : `Clean All ${deadCount} Dead Channels`}
+          </button>
+        </div>
+      )}
 
       {/* Active History Jobs Banner (if any running) */}
       {runningJobs.length > 0 && (
@@ -436,12 +505,13 @@ export default function BackupForwarderDetailPage() {
           {/* Tabs */}
           <div className="flex items-center gap-1.5 p-1 bg-[#0d1117] border border-[#1f2937] rounded-lg text-xs font-medium overflow-x-auto">
             <button
-              onClick={() => setActiveTab('all')}
-              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap ${
-                activeTab === 'all' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
+              onClick={() => setActiveTab('live')}
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'live' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
               }`}
             >
-              All Channels ({dialogs.length})
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              Live Channels ({liveCount})
             </button>
             <button
               onClick={() => setActiveTab('mapped')}
@@ -449,7 +519,6 @@ export default function BackupForwarderDetailPage() {
                 activeTab === 'mapped' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
               }`}
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               Active Forwarding ({mappedCount})
             </button>
             <button
@@ -461,13 +530,24 @@ export default function BackupForwarderDetailPage() {
               <Crown className="w-3 h-3 text-amber-300" />
               My Admin Targets ({adminCount})
             </button>
+            {deadCount > 0 && (
+              <button
+                onClick={() => setActiveTab('dead')}
+                className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                  activeTab === 'dead' ? 'bg-red-600 text-white' : 'text-red-400 hover:text-red-300'
+                }`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                Dead in Telegram ({deadCount})
+              </button>
+            )}
             <button
-              onClick={() => setActiveTab('unmapped')}
+              onClick={() => setActiveTab('all')}
               className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap ${
-                activeTab === 'unmapped' ? 'bg-[#1f2937] text-white' : 'text-gray-400 hover:text-white'
+                activeTab === 'all' ? 'bg-[#1f2937] text-white' : 'text-gray-400 hover:text-white'
               }`}
             >
-              Unmapped ({dialogs.length - mappedCount})
+              All ({dialogs.length})
             </button>
           </div>
 
@@ -495,12 +575,15 @@ export default function BackupForwarderDetailPage() {
             {filteredDialogs.map((channel) => {
               const gradient = getAvatarGradient(channel.id);
               const initials = getInitials(channel.title);
+              const isLive = channel.is_live !== false;
 
               return (
                 <div
                   key={channel.id}
                   className={`bg-[#0d1117] border rounded-xl p-4 transition-all duration-200 flex flex-col md:flex-row md:items-center justify-between gap-4 ${
-                    channel.is_mapped
+                    !isLive
+                      ? 'border-red-500/30 bg-red-950/10'
+                      : channel.is_mapped
                       ? 'border-emerald-500/40 hover:border-emerald-500/60 bg-emerald-950/10'
                       : 'border-[#1f2937] hover:border-gray-700'
                   }`}
@@ -509,7 +592,7 @@ export default function BackupForwarderDetailPage() {
                   <div className="flex items-center gap-3.5 min-w-0">
                     {/* Telegram Avatar */}
                     <div
-                      className={`w-11 h-11 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0 select-none`}
+                      className={`w-11 h-11 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0 select-none opacity-${isLive ? '100' : '60'}`}
                     >
                       {initials}
                     </div>
@@ -520,6 +603,19 @@ export default function BackupForwarderDetailPage() {
                         <h3 className="text-sm font-semibold text-white truncate max-w-[280px] sm:max-w-md">
                           {channel.title}
                         </h3>
+
+                        {/* Real-time Status Badge */}
+                        {isLive ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                            Live on Telegram
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                            Dead / Left Telegram
+                          </span>
+                        )}
 
                         {/* Admin Badge */}
                         {channel.is_admin ? (
@@ -556,7 +652,22 @@ export default function BackupForwarderDetailPage() {
 
                   {/* Right: Target Status & Actions */}
                   <div className="flex items-center justify-between md:justify-end gap-3 flex-shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-[#1f2937]/50">
-                    {channel.is_mapped ? (
+                    {!isLive ? (
+                      /* Dead Channel State */
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-red-400/80 italic">Channel inaccessible in Telegram</span>
+                        <button
+                          onClick={() => {
+                            setUnlinkSourceId(channel.id);
+                            setUnlinkConfirmOpen(true);
+                          }}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Clean from DB
+                        </button>
+                      </div>
+                    ) : channel.is_mapped ? (
                       /* Active Routing Box */
                       <div className="flex items-center gap-2 flex-wrap justify-end">
                         <div className="bg-[#111827] border border-emerald-500/30 rounded-lg px-3 py-1.5 text-xs text-left">
@@ -796,12 +907,23 @@ export default function BackupForwarderDetailPage() {
         </div>
       )}
 
+      {/* Clean Dead Channels Confirm Dialog */}
+      <ConfirmDialog
+        open={cleanDeadConfirmOpen}
+        title={`Clean All ${deadCount} Dead Channels?`}
+        message="This will remove all channels from MongoDB that have been banned, deleted, or left by the bot on Telegram. Your active channels and forwarding rules will remain completely intact."
+        confirmLabel="Clean Dead Channels"
+        variant="danger"
+        onConfirm={handleCleanDeadChannels}
+        onCancel={() => setCleanDeadConfirmOpen(false)}
+      />
+
       {/* Unlink Mapping Confirm Dialog */}
       <ConfirmDialog
         open={unlinkConfirmOpen}
-        title="Unlink Target Channel?"
-        message="This will stop automatic forwarding for this channel. Past copied messages in the target channel will remain intact."
-        confirmLabel="Unlink Target"
+        title="Unlink / Delete Channel Mapping?"
+        message="This will stop automatic forwarding and remove the mapping from the database. Past copied messages in the target channel will remain intact."
+        confirmLabel="Remove Mapping"
         variant="danger"
         onConfirm={handleUnlink}
         onCancel={() => {

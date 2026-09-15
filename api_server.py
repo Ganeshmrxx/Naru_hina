@@ -449,6 +449,12 @@ async def sync_telegram_history(source_id: int):
     job = await bot_manager.start_bulk_forward_job(source_id=source_id, target_id=target_id)
     return job
 
+@app.post("/api/telegram/clean-dead-channels", dependencies=[Depends(verify_token)])
+async def clean_dead_channels():
+    if db_b is None:
+        raise HTTPException(status_code=500, detail="Cluster B not connected")
+    return await bot_manager.clean_dead_channels(db_b=db_b)
+
 # --- Channels & Groups (Aggregated from DB) ---
 @app.get("/api/channels", dependencies=[Depends(verify_token)])
 def get_all_channels():

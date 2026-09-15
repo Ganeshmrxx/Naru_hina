@@ -85,4 +85,6 @@ export interface TelegramDialog {
   is_mapped: boolean;
   target_id: number | null;
   target_name: string | null;
+  is_live?: boolean;
+  live_status?: 'active' | 'dead' | string;
 }

@@ -466,7 +466,9 @@ class BotManager:
                         "members_count": getattr(chat, "members_count", None),
                         "is_mapped": False,
                         "target_id": None,
-                        "target_name": None
+                        "target_name": None,
+                        "is_live": True,
+                        "live_status": "active"
                     })
 
                 # Admin check for non-creator channels
@@ -527,10 +529,45 @@ class BotManager:
                         "members_count": None,
                         "is_mapped": True,
                         "target_id": m.get("target"),
-                        "target_name": m.get("target_name")
+                        "target_name": m.get("target_name"),
+                        "is_live": False,
+                        "live_status": "dead"
                     })
         except Exception as e:
             logging.error(f"Error enriching dialogs with DB: {e}")
+
+    async def clean_dead_channels(self, db_b = None) -> dict:
+        if db_b is None:
+            return {"error": "Database not connected"}
+        
+        dialogs = await self.get_telegram_dialogs(force_refresh=True, db_b=db_b)
+        live_ids = {d["id"] for d in dialogs if d.get("is_live", True)}
+        live_str_ids = {str(d["id"]) for d in dialogs if d.get("is_live", True)}
+
+        mappings = list(db_b.xDataChannels.find({}))
+        dead_ids = []
+        for m in mappings:
+            src = m.get("_id")
+            try:
+                src_int = int(src)
+            except Exception:
+                src_int = src
+            if src not in live_ids and src not in live_str_ids and src_int not in live_ids:
+                dead_ids.append(src)
+
+        deleted_count = 0
+        for d_id in dead_ids:
+            res = db_b.xDataChannels.delete_one({"_id": d_id})
+            deleted_count += res.deleted_count
+
+        self.dialogs_cache = []
+        self.dialogs_cache_time = 0
+
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "remaining_live": len(mappings) - deleted_count
+        }
 
     async def set_channel_mapping(self, source_id: int, source_name: str, target_id: int, target_name: str, forward_history: bool = True, db_b = None) -> dict:
         if db_b is None:
