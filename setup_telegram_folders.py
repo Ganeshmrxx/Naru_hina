@@ -78,12 +78,14 @@ async def main():
     print(f" - Restricted TERABOX: {len(restricted_terabox)} chats")
     
     # Free tier limit: max 100 peers per folder
-    videos_db_capped = videos_db[:100]
+    videos_db1 = videos_db[:100]
+    videos_db2 = videos_db[100:200]
     
     # 2. Define folders to create
     folders_to_setup = [
         {"id": 4, "title": "🎯 Target Hub", "emoticon": "🎯", "chats": target_hub},
-        {"id": 5, "title": "🎥 Videos DB", "emoticon": "🎬", "chats": videos_db_capped},
+        {"id": 5, "title": "🎥 Videos DB1", "emoticon": "🎬", "chats": videos_db1},
+        {"id": 9, "title": "🎥 Videos DB2", "emoticon": "🎬", "chats": videos_db2},
         {"id": 6, "title": "📦 TeraBox", "emoticon": "📦", "chats": terabox_links},
         {"id": 7, "title": "🔒 R-Videos", "emoticon": "🔒", "chats": restricted_video},
         {"id": 8, "title": "🔒 R-TeraBox", "emoticon": "📁", "chats": restricted_terabox},

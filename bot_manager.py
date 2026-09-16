@@ -657,11 +657,13 @@ class BotManager:
                 else:
                     videos_db.append(chat)
 
-        videos_db_capped = videos_db[:100]
+        videos_db1 = videos_db[:100]
+        videos_db2 = videos_db[100:200]
 
         folders_to_setup = [
             {"id": 4, "title": "🎯 Target Hub", "emoticon": "🎯", "chats": target_hub},
-            {"id": 5, "title": "🎥 Videos DB", "emoticon": "🎬", "chats": videos_db_capped},
+            {"id": 5, "title": "🎥 Videos DB1", "emoticon": "🎬", "chats": videos_db1},
+            {"id": 9, "title": "🎥 Videos DB2", "emoticon": "🎬", "chats": videos_db2},
             {"id": 6, "title": "📦 TeraBox", "emoticon": "📦", "chats": terabox_links if terabox_links else restricted_terabox[:2]},
             {"id": 7, "title": "🔒 R-Videos", "emoticon": "🔒", "chats": restricted_video},
             {"id": 8, "title": "🔒 R-TeraBox", "emoticon": "📁", "chats": restricted_terabox if restricted_terabox else restricted_video[:2]},
