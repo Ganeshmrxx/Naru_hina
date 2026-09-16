@@ -31,6 +31,40 @@ export default function MediaGalleryPage() {
   // Active Preview Modal
   const [previewItem, setPreviewItem] = useState<TelegramMediaItem | null>(null);
   const [forwardingId, setForwardingId] = useState<number | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [copiedStreamUrl, setCopiedStreamUrl] = useState(false);
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setVideoError(null);
+    setCopiedStreamUrl(false);
+  }, [previewItem]);
+
+  const getStreamUrl = (item: TelegramMediaItem | null) => {
+    if (!item) return '';
+    const path = item.stream_url || `/api/telegram/media/${item.chat_id}/${item.message_id}/stream`;
+    if (typeof window !== 'undefined') {
+      return `${window.location.origin}${path}`;
+    }
+    return path;
+  };
+
+  const copyStreamUrl = (item: TelegramMediaItem) => {
+    const url = getStreamUrl(item);
+    if (navigator?.clipboard) {
+      navigator.clipboard.writeText(url);
+    }
+    setCopiedStreamUrl(true);
+    toast('success', 'Stream URL copied! Paste into VLC or external player.');
+    setTimeout(() => setCopiedStreamUrl(false), 3000);
+  };
+
+  const openInVlc = (item: TelegramMediaItem) => {
+    const url = getStreamUrl(item);
+    window.open(`vlc://${url}`, '_blank');
+    toast('info', 'Opening in VLC...');
+  };
 
   // 1. Fetch Folders & Channels
   const fetchFolders = async () => {
@@ -434,22 +468,100 @@ export default function MediaGalleryPage() {
             {/* Modal Body / Media View */}
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
               <div className="relative aspect-video bg-[#0a0a0f] rounded-xl overflow-hidden flex items-center justify-center border border-[#1f2937]">
-                <div className="absolute inset-0 flex items-center justify-center text-gray-700">
-                  <Film className="w-16 h-16" />
-                </div>
-                {previewItem.has_thumb && previewItem.thumb_url && (
-                  <img
-                    src={previewItem.thumb_url}
-                    alt={previewItem.file_name}
-                    className="absolute inset-0 w-full h-full object-contain"
-                  />
-                )}
-                {previewItem.media_type === 'video' && (
-                  <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-black/80 text-white text-xs font-mono">
-                    Duration: {previewItem.duration_formatted || 'N/A'}
-                  </div>
+                {previewItem.media_type === 'video' && isPlaying ? (
+                  <video
+                    key={previewItem.message_id}
+                    src={previewItem.stream_url || `/api/telegram/media/${previewItem.chat_id}/${previewItem.message_id}/stream`}
+                    controls
+                    autoPlay
+                    playsInline
+                    className="w-full h-full object-contain bg-black"
+                    onError={() => {
+                      setVideoError('Browser codec limitation: This video uses a codec that your browser cannot play directly. Use "Open in VLC" or "Download" below to play.');
+                    }}
+                  >
+                    Your browser does not support HTML5 video streaming.
+                  </video>
+                ) : (
+                  <>
+                    <div className="absolute inset-0 flex items-center justify-center text-gray-700">
+                      <Film className="w-16 h-16" />
+                    </div>
+                    {previewItem.has_thumb && previewItem.thumb_url && (
+                      <img
+                        src={previewItem.thumb_url}
+                        alt={previewItem.file_name}
+                        className="absolute inset-0 w-full h-full object-contain"
+                      />
+                    )}
+                    {previewItem.media_type === 'video' && (
+                      <div
+                        className="absolute inset-0 bg-black/40 hover:bg-black/20 flex flex-col items-center justify-center cursor-pointer transition-all group"
+                        onClick={() => setIsPlaying(true)}
+                      >
+                        <div className="w-16 h-16 rounded-full bg-blue-600 group-hover:bg-blue-500 text-white flex items-center justify-center shadow-2xl transform group-hover:scale-110 transition-transform">
+                          <Play className="w-8 h-8 ml-1" />
+                        </div>
+                        <span className="mt-3 px-3 py-1 rounded-full text-xs font-semibold bg-black/80 text-white backdrop-blur-sm shadow-lg">
+                          Click to Play Video
+                        </span>
+                      </div>
+                    )}
+                    {previewItem.media_type === 'video' && (
+                      <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-black/80 text-white text-xs font-mono">
+                        Duration: {previewItem.duration_formatted || 'N/A'}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
+
+              {videoError && (
+                <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-xs flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold">Browser Codec Limitation</p>
+                    <p className="mt-0.5 text-yellow-400/90">{videoError}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Video Action Toolbar */}
+              {previewItem.media_type === 'video' && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {!isPlaying && (
+                    <button
+                      onClick={() => setIsPlaying(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      Play in Browser
+                    </button>
+                  )}
+                  <button
+                    onClick={() => openInVlc(previewItem)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1f2937] hover:bg-[#2d3748] text-gray-200 text-xs font-medium border border-[#374151] transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-orange-400" />
+                    Open in VLC Player
+                  </button>
+                  <button
+                    onClick={() => copyStreamUrl(previewItem)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1f2937] hover:bg-[#2d3748] text-gray-200 text-xs font-medium border border-[#374151] transition-colors"
+                  >
+                    <CheckCircle2 className={`w-3.5 h-3.5 ${copiedStreamUrl ? 'text-green-400' : 'text-gray-400'}`} />
+                    {copiedStreamUrl ? 'Copied URL!' : 'Copy Stream Link'}
+                  </button>
+                  <a
+                    href={previewItem.stream_url || `/api/telegram/media/${previewItem.chat_id}/${previewItem.message_id}/stream`}
+                    download={previewItem.file_name}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1f2937] hover:bg-[#2d3748] text-gray-200 text-xs font-medium border border-[#374151] transition-colors"
+                  >
+                    <HardDrive className="w-3.5 h-3.5 text-blue-400" />
+                    Download Video
+                  </a>
+                </div>
+              )}
 
               {/* Technical Specifications */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">

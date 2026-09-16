@@ -7,9 +7,11 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query, Response
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
@@ -754,7 +756,8 @@ async def get_channel_media(chat_id: int, limit: int = 40):
                 "caption": msg.caption or "",
                 "date": msg.date.isoformat() if msg.date else None,
                 "has_thumb": has_thumb,
-                "thumb_url": f"/api/telegram/media/{chat_id}/{msg.id}/thumb" if has_thumb else None
+                "thumb_url": f"/api/telegram/media/{chat_id}/{msg.id}/thumb" if has_thumb else None,
+                "stream_url": f"/api/telegram/media/{chat_id}/{msg.id}/stream" if (m_type == "video" or m_type == "document") else None
             })
             
         return media_list
@@ -814,6 +817,105 @@ async def get_media_thumbnail(chat_id: int, message_id: int):
         raise
     except Exception as e:
         print(f"Error fetching thumb {chat_id}/{message_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/telegram/media/{chat_id}/{message_id}/stream")
+async def stream_media_endpoint(chat_id: int, message_id: int, request: Request):
+    """
+    High-performance video streaming endpoint with HTTP Range support (206 Partial Content).
+    Enables seeking, scrubbing, and smooth in-browser playback for MP4, WebM, and MKV.
+    """
+    try:
+        tg = await get_api_tg_client()
+        msg = await tg.get_messages(chat_id, message_id)
+        if not msg:
+            raise HTTPException(status_code=404, detail="Message not found")
+            
+        media = msg.video or msg.document or msg.audio or msg.animation
+        if not media:
+            raise HTTPException(status_code=404, detail="No streamable media in message")
+            
+        file_size = getattr(media, "file_size", 0) or 0
+        file_name = getattr(media, "file_name", None) or f"video_{message_id}.mp4"
+        mime_type = getattr(media, "mime_type", None) or "video/mp4"
+        
+        fname_lower = file_name.lower()
+        if fname_lower.endswith(".mkv"):
+            mime_type = "video/x-matroska"
+        elif fname_lower.endswith(".mp4"):
+            mime_type = "video/mp4"
+        elif fname_lower.endswith(".webm"):
+            mime_type = "video/webm"
+            
+        range_header = request.headers.get("range")
+        chunk_size = 1024 * 1024  # 1MB chunk size in Pyrogram
+        
+        if range_header:
+            range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+            if range_match:
+                start = int(range_match.group(1))
+                end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+            else:
+                start = 0
+                end = file_size - 1
+        else:
+            start = 0
+            end = file_size - 1
+            
+        if file_size > 0:
+            if start >= file_size:
+                raise HTTPException(status_code=416, detail="Requested range not satisfiable")
+            end = min(end, file_size - 1)
+        else:
+            end = 0
+            
+        content_length = end - start + 1 if file_size > 0 else 0
+        start_chunk = start // chunk_size
+        end_chunk = end // chunk_size if file_size > 0 else 0
+        total_chunks = (end_chunk - start_chunk) + 1
+        
+        async def media_streamer():
+            bytes_left = content_length
+            offset = start_chunk
+            try:
+                async for chunk in tg.stream_media(msg, offset=offset, limit=total_chunks):
+                    if not chunk:
+                        break
+                    if offset == start_chunk:
+                        chunk_offset = start % chunk_size
+                        chunk = chunk[chunk_offset:]
+                    if len(chunk) > bytes_left:
+                        chunk = chunk[:bytes_left]
+                    bytes_left -= len(chunk)
+                    yield chunk
+                    offset += 1
+                    if bytes_left <= 0:
+                        break
+            except Exception as stream_err:
+                print(f"Stream error for {chat_id}/{message_id}: {stream_err}")
+                return
+
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(content_length),
+            "Content-Type": mime_type,
+            "Content-Disposition": f'inline; filename="{file_name}"',
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
+        }
+        
+        status_code = 206 if range_header else 200
+        return StreamingResponse(
+            media_streamer(),
+            status_code=status_code,
+            headers=headers,
+            media_type=mime_type
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error setting up stream for {chat_id}/{message_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 class ForwardMediaRequest(BaseModel):

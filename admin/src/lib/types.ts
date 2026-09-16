@@ -118,4 +118,5 @@ export interface TelegramMediaItem {
   date: string;
   has_thumb: boolean;
   thumb_url: string | null;
+  stream_url?: string | null;
 }
