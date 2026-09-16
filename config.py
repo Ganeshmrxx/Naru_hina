@@ -1,5 +1,3 @@
-
-
 from os import getenv
 import logging
 
@@ -17,9 +15,24 @@ class Config(object):
 
     Session4 = "BQGmQIcALwDDWIW_T22sR_8OVT_mlvFy8FxCSxISKIEC89g-CQneY_85H75GO8wCs7Yx7wiOTfFwhpBDJdXAln0YRMxTGLtuRk0lrJHf5rOK72fIZqnO1fk-03V4Qwn8aJEzsm2SJoR1ZfpKGXxa_EzhS5ZZRX7Qq5p3xZ8xSUT0hLTrsfEKdet2qo5EZzaKDu2QqiA3tD5BLJXmwoD-HAxw2kBHhuX0Zk6l7M16s08d8bASkAIUY6nJd8LP84bgz7c7v_NlLbbABZC1WIyVePaWKsTs88sKEXYmE-m66RmWOqBHDda4qITRlvVVbhy-t4zyoTdwbakUE6Y411AdoGXCborxAAAAAAH77WeOAA"
 
+    # AllForward Worker Bots Pool (12 Verified Active Bots)
+    BOT_WORKERS = [
+        "8421439819:AAFPd3y_tHoumTPLRuNUD_rHFEiwSEvGbvE",
+        "8399533664:AAGz1VIxoT-LBD6eqj4ardVDMEQhpN3bL2M",
+        "8351387869:AAE9Or0oSMeWpqp8QufLa3eSO2BA3ZLskCs",
+        "8553020860:AAF137FJiLyV8NN9wE_L4-qcL8CQ6DG74v4",
+        "8536358106:AAGn1FkhOhpOv6_badW5NtNlCGu2iRncVms",
+        "8435784531:AAFAsAJFdML2L6x7QU1-w52ZhVhoDn7bX48",
+        "8544299302:AAE8wbACzhnkBWepAloIDBYKr6ZqIga7TKU",
+        "8839296156:AAHNQjFMMSg5LVc4Pcc5_nBCZ2CgZhueWlY",
+        "8803558100:AAFxFrB408lB8pecs0n_bQPsmrsgyj8t7Kc",
+        "8871876487:AAF-z1uAsiqKMEsSLnmmegTWI-aETkLTTyg",
+        "8484567134:AAGbV2g7A9o503qXDNqpIE4S0270WOj0sOs",
+        "8825125992:AAGKsjCRxAZs_ojBTUyzgfAJKLeyhER7IZM"
+    ]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 LOGGER = logging.getLogger("copy-user-bot")
-

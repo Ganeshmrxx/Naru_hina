@@ -1,0 +1,77 @@
+[
+  {
+    "index": 1,
+    "name": "Xforward 1",
+    "username": "Xforward1_bot",
+    "token": "8421439819:AAFPd3y_tHoumTPLRuNUD_rHFEiwSEvGbvE",
+    "bot_id": 8421439819,
+    "first_name": "F1",
+    "verified": true
+  },
+  {
+    "index": 2,
+    "name": "Xforward 2",
+    "username": "Xforward2_bot",
+    "token": "8399533664:AAGz1VIxoT-LBD6eqj4ardVDMEQhpN3bL2M"
+  },
+  {
+    "index": 3,
+    "name": "Xforward 3",
+    "username": "Xforward3_bot",
+    "token": "8351387869:AAE9Or0oSMeWpqp8QufLa3eSO2BA3ZLskCs"
+  },
+  {
+    "index": 4,
+    "name": "Xforward 4",
+    "username": "Xforward4_bot",
+    "token": "8553020860:AAF137FJiLyV8NN9wE_L4-qcL8CQ6DG74v4"
+  },
+  {
+    "index": 5,
+    "name": "Xforward 5",
+    "username": "Xforward5_bot",
+    "token": "8536358106:AAGn1FkhOhpOv6_badW5NtNlCGu2iRncVms"
+  },
+  {
+    "index": 6,
+    "name": "Xforward 6",
+    "username": "Xforward6_bot",
+    "token": "8435784531:AAFAsAJFdML2L6x7QU1-w52ZhVhoDn7bX48"
+  },
+  {
+    "index": 7,
+    "name": "Xforward 7",
+    "username": "Xforward7_bot",
+    "token": "8544299302:AAE8wbACzhnkBWepAloIDBYKr6ZqIga7TKU"
+  },
+  {
+    "index": 8,
+    "name": "Xforward 8",
+    "username": "Xforward8_bot",
+    "token": "8839296156:AAHNQjFMMSg5LVc4Pcc5_nBCZ2CgZhueWlY"
+  },
+  {
+    "index": 9,
+    "name": "Xforward 9",
+    "username": "Xforward9_bot",
+    "token": "8803558100:AAFxFrB408lB8pecs0n_bQPsmrsgyj8t7Kc"
+  },
+  {
+    "index": 10,
+    "name": "Xforward 10",
+    "username": "Xforward10_bot",
+    "token": "8871876487:AAF-z1uAsiqKMEsSLnmmegTWI-aETkLTTyg"
+  },
+  {
+    "index": 11,
+    "name": "Xforward 11",
+    "username": "Xforward11_bot",
+    "token": "8484567134:AAGbV2g7A9o503qXDNqpIE4S0270WOj0sOs"
+  },
+  {
+    "index": 12,
+    "name": "Xforward 12",
+    "username": "Xforward12_bot",
+    "token": "8825125992:AAGKsjCRxAZs_ojBTUyzgfAJKLeyhER7IZM"
+  }
+]
