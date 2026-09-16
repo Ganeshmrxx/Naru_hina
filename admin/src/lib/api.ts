@@ -1,3 +1,5 @@
+import { TelegramFolder, TelegramMediaItem } from './types';
+
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
     // If running standalone Next.js dev server on port 3000, point to local backend port 8000
@@ -278,6 +280,22 @@ class ApiClient {
   async setupTelegramFolders() {
     return this.request<{ success: boolean; folders: Array<{ id: number; title: string; count: number; success?: boolean; error?: string }> }>('/api/telegram/setup-folders', {
       method: 'POST',
+    });
+  }
+
+  // Telegram Live Media & Folders
+  async getTelegramFolders() {
+    return this.request<TelegramFolder[]>('/api/telegram/folders');
+  }
+
+  async getChannelMedia(chatId: number, limit: number = 40) {
+    return this.request<TelegramMediaItem[]>(`/api/telegram/channel/${chatId}/media?limit=${limit}`);
+  }
+
+  async forwardMedia(data: { from_chat_id: number; to_chat_id: number; message_ids: number[] }) {
+    return this.request<{ success: boolean; forwarded_count: number }>('/api/telegram/media/forward', {
+      method: 'POST',
+      body: JSON.stringify(data),
     });
   }
 

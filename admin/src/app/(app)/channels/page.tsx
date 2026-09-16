@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import {
   Hash, Search, Filter, RefreshCw, ExternalLink, ShieldCheck,
-  Radio, Layers, ArrowRightLeft
+  Radio, Layers, ArrowRightLeft, Film
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -119,6 +120,7 @@ export default function ChannelsPage() {
                   <th className="py-3 px-4">Queue Status</th>
                   <th className="py-3 px-4">Origin / Registry</th>
                   <th className="py-3 px-4">Last Scanned</th>
+                  <th className="py-3 px-4 text-right">Media</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1f2937]">
@@ -147,6 +149,15 @@ export default function ChannelsPage() {
                         </span>
                       </td>
                       <td className="py-3 px-4 text-gray-400">{lastScan}</td>
+                      <td className="py-3 px-4 text-right">
+                        <Link
+                          href="/media"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-600/10 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-500/20 text-xs font-medium transition-colors"
+                        >
+                          <Film className="w-3.5 h-3.5" />
+                          <span>Gallery</span>
+                        </Link>
+                      </td>
                     </tr>
                   );
                 })}

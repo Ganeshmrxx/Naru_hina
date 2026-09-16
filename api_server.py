@@ -611,6 +611,211 @@ async def stream_logs(request: Request):
 def get_errors_endpoint(limit: int = 50):
     return bot_manager.get_errors(limit=limit)
 
+# --- Telegram Live Media & Folder APIs ---
+from config import Config
+from pyrogram import Client as TgClient
+from pyrogram.raw.functions.messages import GetDialogFilters
+
+_api_tg_client: Optional[TgClient] = None
+_thumb_cache: Dict[str, bytes] = {}
+
+async def get_api_tg_client() -> TgClient:
+    global _api_tg_client
+    if _api_tg_client is None or not _api_tg_client.is_connected:
+        _api_tg_client = TgClient(
+            "api_media_streamer",
+            api_id=Config.API_ID2,
+            api_hash=Config.API_HASH2,
+            session_string=Config.SESSION2,
+            in_memory=True
+        )
+        await _api_tg_client.start()
+    return _api_tg_client
+
+@app.get("/api/telegram/folders", dependencies=[Depends(verify_token)])
+async def get_telegram_folders():
+    try:
+        tg = await get_api_tg_client()
+        filters = await tg.invoke(GetDialogFilters())
+        folder_list = []
+        for f in filters:
+            fid = getattr(f, "id", None)
+            if fid is None:
+                continue
+            title = getattr(f, "title", "Untitled")
+            emoticon = getattr(f, "emoticon", "") or ""
+            peers = getattr(f, "include_peers", [])
+            
+            channels = []
+            for p in peers:
+                cid = getattr(p, "channel_id", None) or getattr(p, "chat_id", None)
+                if not cid:
+                    continue
+                chat_id = int(f"-100{cid}") if not str(cid).startswith("-") else cid
+                try:
+                    chat = await tg.get_chat(chat_id)
+                    channels.append({
+                        "chat_id": chat.id,
+                        "title": chat.title,
+                        "username": chat.username,
+                        "is_public": bool(chat.username),
+                        "has_protected_content": getattr(chat, "has_protected_content", False)
+                    })
+                except Exception:
+                    channels.append({
+                        "chat_id": chat_id,
+                        "title": f"Chat {chat_id}",
+                        "username": None,
+                        "is_public": False,
+                        "has_protected_content": False
+                    })
+                    
+            folder_list.append({
+                "id": fid,
+                "title": title,
+                "emoticon": emoticon,
+                "channels_count": len(channels),
+                "channels": channels
+            })
+        return folder_list
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/telegram/channel/{chat_id}/media", dependencies=[Depends(verify_token)])
+async def get_channel_media(chat_id: int, limit: int = 40):
+    try:
+        tg = await get_api_tg_client()
+        media_list = []
+        
+        async for msg in tg.get_chat_history(chat_id, limit=limit):
+            m_type = None
+            file_name = None
+            file_size = 0
+            duration = None
+            has_thumb = False
+            
+            if msg.video:
+                m_type = "video"
+                file_name = msg.video.file_name or f"video_{msg.id}.mp4"
+                file_size = msg.video.file_size or 0
+                duration = msg.video.duration
+                has_thumb = bool(msg.video.thumbs)
+            elif msg.document:
+                is_video_doc = False
+                if msg.document.mime_type and msg.document.mime_type.startswith("video/"):
+                    is_video_doc = True
+                elif msg.document.file_name and msg.document.file_name.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
+                    is_video_doc = True
+                    
+                if is_video_doc:
+                    m_type = "video"
+                else:
+                    m_type = "document"
+                file_name = msg.document.file_name or f"doc_{msg.id}"
+                file_size = msg.document.file_size or 0
+                has_thumb = bool(msg.document.thumbs)
+            elif msg.photo:
+                m_type = "photo"
+                file_name = f"photo_{msg.id}.jpg"
+                has_thumb = True
+                
+            if not m_type:
+                continue
+                
+            # Formatted size
+            if file_size > 1024 * 1024 * 1024:
+                size_fmt = f"{round(file_size / (1024 * 1024 * 1024), 2)} GB"
+            elif file_size > 1024 * 1024:
+                size_fmt = f"{round(file_size / (1024 * 1024), 1)} MB"
+            elif file_size > 1024:
+                size_fmt = f"{round(file_size / 1024, 1)} KB"
+            else:
+                size_fmt = f"{file_size} B" if file_size else "Unknown"
+                
+            # Formatted duration
+            duration_fmt = None
+            if duration:
+                mins, secs = divmod(duration, 60)
+                hrs, mins = divmod(mins, 60)
+                if hrs:
+                    duration_fmt = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+                else:
+                    duration_fmt = f"{mins:02d}:{secs:02d}"
+                    
+            media_list.append({
+                "message_id": msg.id,
+                "chat_id": chat_id,
+                "media_type": m_type,
+                "file_name": file_name,
+                "file_size": file_size,
+                "file_size_formatted": size_fmt,
+                "duration": duration,
+                "duration_formatted": duration_fmt,
+                "caption": msg.caption or "",
+                "date": msg.date.isoformat() if msg.date else None,
+                "has_thumb": has_thumb,
+                "thumb_url": f"/api/telegram/media/{chat_id}/{msg.id}/thumb" if has_thumb else None
+            })
+            
+        return media_list
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/telegram/media/{chat_id}/{message_id}/thumb")
+async def get_media_thumbnail(chat_id: int, message_id: int):
+    cache_key = f"{chat_id}_{message_id}"
+    if cache_key in _thumb_cache:
+        return Response(content=_thumb_cache[cache_key], media_type="image/jpeg")
+        
+    try:
+        tg = await get_api_tg_client()
+        msg = await tg.get_messages(chat_id, message_id)
+        
+        file_to_download = None
+        if msg.video and msg.video.thumbs:
+            file_to_download = msg.video.thumbs[0].file_id
+        elif msg.document and msg.document.thumbs:
+            file_to_download = msg.document.thumbs[0].file_id
+        elif msg.photo:
+            file_to_download = msg.photo.file_id
+            
+        if not file_to_download:
+            raise HTTPException(status_code=404, detail="No thumbnail available for this message")
+            
+        thumb_stream = await tg.download_media(file_to_download, in_memory=True)
+        if thumb_stream:
+            img_bytes = thumb_stream.getvalue()
+            # Keep cache size bounded
+            if len(_thumb_cache) > 500:
+                _thumb_cache.pop(next(iter(_thumb_cache)))
+            _thumb_cache[cache_key] = img_bytes
+            return Response(content=img_bytes, media_type="image/jpeg")
+            
+        raise HTTPException(status_code=404, detail="Failed to load thumbnail")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ForwardMediaRequest(BaseModel):
+    from_chat_id: int
+    to_chat_id: int
+    message_ids: List[int]
+
+@app.post("/api/telegram/media/forward", dependencies=[Depends(verify_token)])
+async def forward_media_endpoint(payload: ForwardMediaRequest):
+    try:
+        tg = await get_api_tg_client()
+        res = await tg.forward_messages(
+            chat_id=payload.to_chat_id,
+            from_chat_id=payload.from_chat_id,
+            message_ids=payload.message_ids
+        )
+        return {
+            "success": True,
+            "forwarded_count": len(payload.message_ids) if isinstance(res, list) else 1
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Serve Next.js Static UI from single port ---
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse

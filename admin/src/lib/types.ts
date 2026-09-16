@@ -88,3 +88,34 @@ export interface TelegramDialog {
   is_live?: boolean;
   live_status?: 'active' | 'dead' | string;
 }
+
+export interface TelegramFolderChannel {
+  chat_id: number;
+  title: string;
+  username: string | null;
+  is_public: boolean;
+  has_protected_content: boolean;
+}
+
+export interface TelegramFolder {
+  id: number;
+  title: string;
+  emoticon: string;
+  channels_count: number;
+  channels: TelegramFolderChannel[];
+}
+
+export interface TelegramMediaItem {
+  message_id: number;
+  chat_id: number;
+  media_type: 'video' | 'photo' | 'document';
+  file_name: string;
+  file_size: number;
+  file_size_formatted: string;
+  duration: number | null;
+  duration_formatted: string | null;
+  caption: string;
+  date: string;
+  has_thumb: boolean;
+  thumb_url: string | null;
+}

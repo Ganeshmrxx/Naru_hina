@@ -24,6 +24,7 @@ const navigation = [
   { name: 'Data Modifier', href: '/bots/data-modifier', icon: Settings },
   { type: 'divider', label: 'Data' },
   { name: 'Channels', href: '/channels', icon: Hash },
+  { name: 'Media Gallery', href: '/media', icon: Film },
   { name: 'Database', href: '/database', icon: Database },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
   { type: 'divider', label: 'Monitoring' },
