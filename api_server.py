@@ -455,6 +455,10 @@ async def clean_dead_channels():
         raise HTTPException(status_code=500, detail="Cluster B not connected")
     return await bot_manager.clean_dead_channels(db_b=db_b)
 
+@app.post("/api/telegram/setup-folders", dependencies=[Depends(verify_token)])
+async def setup_telegram_folders_endpoint():
+    return await bot_manager.setup_telegram_folders()
+
 # --- Channels & Groups (Aggregated from DB) ---
 @app.get("/api/channels", dependencies=[Depends(verify_token)])
 def get_all_channels():

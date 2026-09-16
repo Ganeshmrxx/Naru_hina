@@ -275,6 +275,12 @@ class ApiClient {
     });
   }
 
+  async setupTelegramFolders() {
+    return this.request<{ success: boolean; folders: Array<{ id: number; title: string; count: number; success?: boolean; error?: string }> }>('/api/telegram/setup-folders', {
+      method: 'POST',
+    });
+  }
+
   // Errors
   async getErrors(limit: number = 50) {
     return this.request<Record<string, unknown>[]>(`/api/errors?limit=${limit}`);

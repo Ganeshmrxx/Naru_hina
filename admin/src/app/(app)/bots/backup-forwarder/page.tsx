@@ -6,7 +6,7 @@ import {
   HardDrive, Play, Square, RotateCw, RefreshCw, ArrowLeft,
   Plus, CheckCircle2, AlertCircle, ShieldCheck, ScrollText, Radio,
   ArrowRightLeft, ArrowRight, Search, Users, Edit3, Trash2,
-  Send, Zap, Crown, Check, X, AlertTriangle, Sparkles
+  Send, Zap, Crown, Check, X, AlertTriangle, Sparkles, FolderPlus
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -50,6 +50,7 @@ export default function BackupForwarderDetailPage() {
   const [refreshingDialogs, setRefreshingDialogs] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [cleaningDead, setCleaningDead] = useState(false);
+  const [organizingFolders, setOrganizingFolders] = useState(false);
 
   // Search & Filter state - Default to 'live' to show real-time active channels
   const [searchQuery, setSearchQuery] = useState('');
@@ -260,6 +261,23 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
+  // Setup / Organize Telegram Folders
+  const handleSetupFolders = async () => {
+    try {
+      setOrganizingFolders(true);
+      const res = await api.setupTelegramFolders();
+      if (res.success) {
+        toast('success', 'Telegram Chat Folders successfully created & organized!');
+      } else {
+        toast('warning', 'Telegram Folders setup completed');
+      }
+    } catch (err: unknown) {
+      toast('error', err instanceof Error ? err.message : 'Failed to organize folders');
+    } finally {
+      setOrganizingFolders(false);
+    }
+  };
+
   // Counts
   const liveCount = useMemo(() => dialogs.filter((d) => d.is_live !== false).length, [dialogs]);
   const deadCount = useMemo(() => dialogs.filter((d) => d.is_live === false).length, [dialogs]);
@@ -387,6 +405,15 @@ export default function BackupForwarderDetailPage() {
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshingDialogs ? 'animate-spin text-blue-400' : ''}`} />
             <span>Live Telegram Sync</span>
+          </button>
+          <button
+            onClick={handleSetupFolders}
+            disabled={organizingFolders}
+            title="Automatically create and organize Telegram Chat Folders: [Videos DB], [TeraBox], [Restricted Video], [Restricted TeraBox], [Target Hub]"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 text-xs font-medium transition-colors disabled:opacity-50"
+          >
+            <FolderPlus className={`w-3.5 h-3.5 ${organizingFolders ? 'animate-spin' : ''}`} />
+            <span>{organizingFolders ? 'Organizing...' : 'Setup Telegram Folders'}</span>
           </button>
         </div>
       </div>
