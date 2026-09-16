@@ -25,7 +25,7 @@ LOG_PATH = os.path.join(WORK_DIR, "bot_scheduler.log")
 
 TARGET_BOTS = 20
 BATCH_SIZE = 5
-GAP_BETWEEN_BOTS_SECONDS = 5 * 60  # 5 minutes gap as requested
+GAP_BETWEEN_BOTS_SECONDS = 10 * 60  # 10 minutes gap as requested
 
 def log(msg):
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
