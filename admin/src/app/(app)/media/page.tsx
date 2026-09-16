@@ -327,22 +327,24 @@ export default function MediaGalleryPage() {
                   className="relative aspect-[3/4] bg-[#0d1117] overflow-hidden cursor-pointer flex items-center justify-center"
                   onClick={() => setPreviewItem(item)}
                 >
-                  {item.has_thumb && item.thumb_url ? (
+                  {/* Background Fallback Icon */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 gap-2 p-4 text-center">
+                    {isVideo ? <Film className="w-10 h-10" /> : isPhoto ? <Image className="w-10 h-10" /> : <FileText className="w-10 h-10" />}
+                    <span className="text-[10px] text-gray-500">
+                      {item.has_thumb ? 'Loading preview...' : 'No preview available'}
+                    </span>
+                  </div>
+
+                  {item.has_thumb && item.thumb_url && (
                     <img
                       src={item.thumb_url}
                       alt={item.file_name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       loading="lazy"
                       onError={(e) => {
-                        // Fallback icon on error
                         e.currentTarget.style.display = 'none';
                       }}
                     />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center text-gray-600 gap-2 p-4 text-center">
-                      {isVideo ? <Film className="w-10 h-10" /> : isPhoto ? <Image className="w-10 h-10" /> : <FileText className="w-10 h-10" />}
-                      <span className="text-[10px] text-gray-500">No poster preview</span>
-                    </div>
                   )}
 
                   {/* Play Overlay for Video */}
@@ -432,14 +434,15 @@ export default function MediaGalleryPage() {
             {/* Modal Body / Media View */}
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
               <div className="relative aspect-video bg-[#0a0a0f] rounded-xl overflow-hidden flex items-center justify-center border border-[#1f2937]">
-                {previewItem.has_thumb && previewItem.thumb_url ? (
+                <div className="absolute inset-0 flex items-center justify-center text-gray-700">
+                  <Film className="w-16 h-16" />
+                </div>
+                {previewItem.has_thumb && previewItem.thumb_url && (
                   <img
                     src={previewItem.thumb_url}
                     alt={previewItem.file_name}
-                    className="w-full h-full object-contain"
+                    className="absolute inset-0 w-full h-full object-contain"
                   />
-                ) : (
-                  <Film className="w-16 h-16 text-gray-700" />
                 )}
                 {previewItem.media_type === 'video' && (
                   <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-black/80 text-white text-xs font-mono">

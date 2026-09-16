@@ -9,7 +9,7 @@ except RuntimeError:
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
@@ -764,35 +764,56 @@ async def get_channel_media(chat_id: int, limit: int = 40):
 @app.get("/api/telegram/media/{chat_id}/{message_id}/thumb")
 async def get_media_thumbnail(chat_id: int, message_id: int):
     cache_key = f"{chat_id}_{message_id}"
+    cache_headers = {
+        "Cache-Control": "public, max-age=86400, immutable",
+        "Access-Control-Allow-Origin": "*",
+    }
     if cache_key in _thumb_cache:
-        return Response(content=_thumb_cache[cache_key], media_type="image/jpeg")
+        return Response(content=_thumb_cache[cache_key], media_type="image/jpeg", headers=cache_headers)
         
     try:
         tg = await get_api_tg_client()
         msg = await tg.get_messages(chat_id, message_id)
+        if not msg:
+            raise HTTPException(status_code=404, detail="Message not found")
         
         file_to_download = None
         if msg.video and msg.video.thumbs:
             file_to_download = msg.video.thumbs[0].file_id
+        elif msg.photo:
+            if getattr(msg.photo, "thumbs", None):
+                file_to_download = msg.photo.thumbs[0].file_id
+            else:
+                file_to_download = msg.photo.file_id
         elif msg.document and msg.document.thumbs:
             file_to_download = msg.document.thumbs[0].file_id
-        elif msg.photo:
-            file_to_download = msg.photo.file_id
             
         if not file_to_download:
             raise HTTPException(status_code=404, detail="No thumbnail available for this message")
             
         thumb_stream = await tg.download_media(file_to_download, in_memory=True)
         if thumb_stream:
-            img_bytes = thumb_stream.getvalue()
+            if hasattr(thumb_stream, "getvalue"):
+                img_bytes = thumb_stream.getvalue()
+            elif isinstance(thumb_stream, (bytes, bytearray)):
+                img_bytes = bytes(thumb_stream)
+            elif isinstance(thumb_stream, str) and os.path.exists(thumb_stream):
+                with open(thumb_stream, "rb") as f:
+                    img_bytes = f.read()
+            else:
+                raise HTTPException(status_code=500, detail="Unsupported thumb stream type")
+                
             # Keep cache size bounded
             if len(_thumb_cache) > 500:
                 _thumb_cache.pop(next(iter(_thumb_cache)))
             _thumb_cache[cache_key] = img_bytes
-            return Response(content=img_bytes, media_type="image/jpeg")
+            return Response(content=img_bytes, media_type="image/jpeg", headers=cache_headers)
             
         raise HTTPException(status_code=404, detail="Failed to load thumbnail")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error fetching thumb {chat_id}/{message_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 class ForwardMediaRequest(BaseModel):
