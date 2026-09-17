@@ -136,17 +136,20 @@ export default function MediaGalleryPage() {
 
   useEffect(() => {
     if (selectedChannel) {
+      setSearchQuery('');
       fetchMedia(selectedChannel.chat_id);
       fetchStats(selectedChannel.chat_id);
     } else {
       setChannelStats(null);
       setMediaItems([]);
+      setSearchQuery('');
     }
   }, [selectedChannel]);
 
   // Handle Folder Change
   const handleSelectFolder = (fid: number) => {
     setSelectedFolderId(fid);
+    setSearchQuery('');
     const folder = folders.find((f) => f.id === fid);
     if (folder && folder.channels.length > 0) {
       setSelectedChannel(folder.channels[0]);
@@ -196,10 +199,11 @@ export default function MediaGalleryPage() {
   const filteredMedia = useMemo(() => {
     return mediaItems.filter((item) => {
       const matchesType = typeFilter === 'all' || item.media_type === typeFilter;
-      const q = searchQuery.toLowerCase();
+      const q = searchQuery.toLowerCase().trim();
       const matchesSearch = !q
         || item.file_name.toLowerCase().includes(q)
-        || item.caption.toLowerCase().includes(q);
+        || item.caption.toLowerCase().includes(q)
+        || (item.date && item.date.toLowerCase().includes(q));
       return matchesType && matchesSearch;
     });
   }, [mediaItems, typeFilter, searchQuery]);
@@ -460,9 +464,19 @@ export default function MediaGalleryPage() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search filename or caption..."
-              className="w-full bg-[#0d1117] border border-[#1f2937] rounded-lg pl-9 pr-4 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+              placeholder="Search filename, caption, year..."
+              autoComplete="off"
+              className="w-full bg-[#0d1117] border border-[#1f2937] rounded-lg pl-9 pr-8 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
             />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                title="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-1 self-start sm:self-auto overflow-x-auto">
@@ -523,11 +537,27 @@ export default function MediaGalleryPage() {
           description="Choose a folder and channel from above to inspect media files."
         />
       ) : filteredMedia.length === 0 ? (
-        <EmptyState
-          icon={Film}
-          title="No Media Found"
-          description="This channel doesn't have any matching media in the latest messages."
-        />
+        <div className="flex flex-col items-center justify-center py-16 bg-[#111827] border border-[#1f2937] rounded-xl p-6 text-center">
+          <Film className="w-12 h-12 text-gray-600 mb-3" />
+          <h3 className="text-base font-semibold text-white">No Matching Media Found</h3>
+          {searchQuery ? (
+            <div className="mt-2 space-y-3">
+              <p className="text-xs text-gray-400">
+                No media matched your search query <span className="font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded">"{searchQuery}"</span>
+              </p>
+              <button
+                onClick={() => setSearchQuery('')}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors"
+              >
+                Clear Search & Show All
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400 mt-1">
+              This channel doesn't have any matching media in the latest messages.
+            </p>
+          )}
+        </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {filteredMedia.map((item) => {
