@@ -8,6 +8,7 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 import re
+import urllib.parse
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query, Response
@@ -961,12 +962,16 @@ async def stream_media_endpoint(chat_id: int, message_id: int, request: Request)
                 print(f"Stream error for {chat_id}/{message_id}: {stream_err}")
                 return
 
+        ascii_filename = re.sub(r'[^\x00-\x7F]+', '_', file_name).strip() or f"video_{message_id}.mp4"
+        encoded_filename = urllib.parse.quote(file_name, encoding="utf-8")
+        disposition = f'inline; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Content-Length": str(content_length),
             "Content-Type": mime_type,
-            "Content-Disposition": f'inline; filename="{file_name}"',
+            "Content-Disposition": disposition,
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
         }

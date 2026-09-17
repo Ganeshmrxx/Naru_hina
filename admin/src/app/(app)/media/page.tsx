@@ -476,8 +476,18 @@ export default function MediaGalleryPage() {
                     autoPlay
                     playsInline
                     className="w-full h-full object-contain bg-black"
-                    onError={() => {
-                      setVideoError('Browser codec limitation: This video uses a codec that your browser cannot play directly. Use "Open in VLC" or "Download" below to play.');
+                    onLoadedData={() => {
+                      setVideoError(null);
+                    }}
+                    onError={(e) => {
+                      const err = e.currentTarget.error;
+                      if (err?.code === 4) {
+                        setVideoError('Browser Codec Limitation: Your browser cannot decode this video format directly. Use "Open in VLC" or "Download" below to play.');
+                      } else if (err?.code === 2) {
+                        setVideoError('Network Stream Error: Server connection was interrupted. Please retry or open in VLC.');
+                      } else {
+                        setVideoError('Playback Error: Could not play video stream directly in browser. Use "Open in VLC" or "Download" below.');
+                      }
                     }}
                   >
                     Your browser does not support HTML5 video streaming.
