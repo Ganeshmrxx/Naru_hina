@@ -260,7 +260,7 @@ class BotManager:
 
     async def start_all(self):
         # Default bots started by main.py plus backup_forwarder for real-time channel routing
-        default_bots = ["movie_forwarder", "terabox_modifier", "promoter_1", "promoter_2", "backup_forwarder"]
+        default_bots = ["movie_forwarder", "terabox_modifier", "promoter_1", "backup_forwarder"]
         for bot_id in default_bots:
             await self.start_bot(bot_id)
             await asyncio.sleep(2)

@@ -738,13 +738,13 @@ async def main():
     movie_forwarder = MovieForwarderBot()
     terabox_modifier = TeraBoxModifierBot()
     promoter_bot_1 = PromotionSpamBot1()
-    promoter_bot_2 = PromotionSpamBot2()
+    # promoter_bot_2 = PromotionSpamBot2()
 
     bots = {
         "Movie Forwarder": movie_forwarder,
         "TeraBox Modifier": terabox_modifier,
         "Promoter Bot 1": promoter_bot_1,
-        "Promoter Bot 2": promoter_bot_2
+        # "Promoter Bot 2": promoter_bot_2
     }
 
     print("🚀 Starting bots one by one...")
