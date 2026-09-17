@@ -1,4 +1,4 @@
-import { TelegramFolder, TelegramMediaItem } from './types';
+import { TelegramFolder, TelegramMediaItem, TelegramChannelStats } from './types';
 
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
@@ -290,6 +290,10 @@ class ApiClient {
 
   async getChannelMedia(chatId: number, limit: number = 40) {
     return this.request<TelegramMediaItem[]>(`/api/telegram/channel/${chatId}/media?limit=${limit}`);
+  }
+
+  async getChannelStats(chatId: number) {
+    return this.request<TelegramChannelStats>(`/api/telegram/channel/${chatId}/stats`);
   }
 
   async forwardMedia(data: { from_chat_id: number; to_chat_id: number; message_ids: number[] }) {

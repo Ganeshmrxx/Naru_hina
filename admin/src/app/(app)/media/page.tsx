@@ -4,13 +4,14 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   Film, Image, FileText, Search, Play, ArrowRight,
   RefreshCw, CheckCircle2, Clock, HardDrive, ShieldCheck,
-  Send, ExternalLink, X, AlertCircle, Folder, Lock, Globe
+  Send, ExternalLink, X, AlertCircle, Folder, Lock, Globe,
+  Users, Link2, Sparkles
 } from 'lucide-react';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/components/ui/Toast';
 import { api } from '@/lib/api';
-import { TelegramFolder, TelegramFolderChannel, TelegramMediaItem } from '@/lib/types';
+import { TelegramFolder, TelegramFolderChannel, TelegramMediaItem, TelegramChannelStats } from '@/lib/types';
 
 export default function MediaGalleryPage() {
   const [folders, setFolders] = useState<TelegramFolder[]>([]);
@@ -18,8 +19,10 @@ export default function MediaGalleryPage() {
   const [selectedChannel, setSelectedChannel] = useState<TelegramFolderChannel | null>(null);
   
   const [mediaItems, setMediaItems] = useState<TelegramMediaItem[]>([]);
+  const [channelStats, setChannelStats] = useState<TelegramChannelStats | null>(null);
   const [loadingFolders, setLoadingFolders] = useState(true);
   const [loadingMedia, setLoadingMedia] = useState(false);
+  const [loadingStats, setLoadingStats] = useState(false);
   
   const [typeFilter, setTypeFilter] = useState<'all' | 'video' | 'photo' | 'document'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -118,9 +121,26 @@ export default function MediaGalleryPage() {
     }
   };
 
+  // 2b. Fetch Channel Total Quantities & Stats
+  const fetchStats = async (chatId: number) => {
+    try {
+      setLoadingStats(true);
+      const stats = await api.getChannelStats(chatId);
+      setChannelStats(stats);
+    } catch (err) {
+      console.error('Failed to load channel stats:', err);
+    } finally {
+      setLoadingStats(false);
+    }
+  };
+
   useEffect(() => {
     if (selectedChannel) {
       fetchMedia(selectedChannel.chat_id);
+      fetchStats(selectedChannel.chat_id);
+    } else {
+      setChannelStats(null);
+      setMediaItems([]);
     }
   }, [selectedChannel]);
 
@@ -132,6 +152,7 @@ export default function MediaGalleryPage() {
       setSelectedChannel(folder.channels[0]);
     } else {
       setSelectedChannel(null);
+      setChannelStats(null);
       setMediaItems([]);
     }
   };
@@ -288,15 +309,147 @@ export default function MediaGalleryPage() {
 
         {selectedChannel && (
           <button
-            onClick={() => fetchMedia(selectedChannel.chat_id)}
-            disabled={loadingMedia}
+            onClick={() => {
+              fetchMedia(selectedChannel.chat_id);
+              fetchStats(selectedChannel.chat_id);
+            }}
+            disabled={loadingMedia || loadingStats}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#0d1117] border border-[#1f2937] text-xs text-gray-300 hover:text-white transition-colors self-end md:self-auto"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loadingMedia ? 'animate-spin text-blue-400' : ''}`} />
-            Refresh Media
+            <RefreshCw className={`w-3.5 h-3.5 ${(loadingMedia || loadingStats) ? 'animate-spin text-blue-400' : ''}`} />
+            Refresh
           </button>
         )}
       </div>
+
+      {/* 2.5 Channel Quality & Media Breakdown Banner (Telegram Profile Style) */}
+      {selectedChannel && (
+        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4 shadow-lg">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            {/* Channel Info & Value Assessment */}
+            <div className="flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 flex items-center justify-center text-white font-bold text-lg shadow-md shrink-0 select-none">
+                {selectedChannel.title.slice(0, 2).toUpperCase()}
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-base font-bold text-white leading-tight">
+                    {selectedChannel.title}
+                  </h2>
+                  {selectedChannel.is_public ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
+                      <Globe className="w-3 h-3" />
+                      @{selectedChannel.username}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 font-medium">
+                      <Lock className="w-3 h-3" />
+                      Private
+                    </span>
+                  )}
+                  {channelStats && (
+                    <span
+                      className={`inline-flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full font-semibold border ${
+                        channelStats.videos_count >= 100
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                          : channelStats.videos_count >= 20
+                          ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                          : channelStats.documents_count >= 50
+                          ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                          : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
+                      }`}
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      {channelStats.assessment}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
+                  <span className="font-mono text-gray-500">ID: {selectedChannel.chat_id}</span>
+                  {channelStats?.members_count !== null && channelStats?.members_count !== undefined && (
+                    <span className="flex items-center gap-1 text-gray-300">
+                      <Users className="w-3.5 h-3.5 text-gray-400" />
+                      {channelStats.members_count.toLocaleString()} subscribers
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 4 Exact Telegram Gallery Metric Counters */}
+            <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap">
+              {/* Videos Counter */}
+              <div className="flex items-center gap-2 bg-[#0d1117] border border-[#1f2937] px-3 py-1.5 rounded-xl">
+                <div className="w-7 h-7 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400">
+                  <Film className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <p className="text-[9px] uppercase font-semibold text-gray-400 tracking-wider">Videos</p>
+                  <p className="text-xs sm:text-sm font-bold text-white font-mono">
+                    {loadingStats ? (
+                      <span className="inline-block w-8 h-3.5 bg-gray-800 animate-pulse rounded" />
+                    ) : (
+                      channelStats?.videos_count.toLocaleString() ?? '—'
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* Photos Counter */}
+              <div className="flex items-center gap-2 bg-[#0d1117] border border-[#1f2937] px-3 py-1.5 rounded-xl">
+                <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                  <Image className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <p className="text-[9px] uppercase font-semibold text-gray-400 tracking-wider">Photos</p>
+                  <p className="text-xs sm:text-sm font-bold text-white font-mono">
+                    {loadingStats ? (
+                      <span className="inline-block w-8 h-3.5 bg-gray-800 animate-pulse rounded" />
+                    ) : (
+                      channelStats?.photos_count.toLocaleString() ?? '—'
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* Files / Documents Counter */}
+              <div className="flex items-center gap-2 bg-[#0d1117] border border-[#1f2937] px-3 py-1.5 rounded-xl">
+                <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400">
+                  <FileText className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <p className="text-[9px] uppercase font-semibold text-gray-400 tracking-wider">Files</p>
+                  <p className="text-xs sm:text-sm font-bold text-white font-mono">
+                    {loadingStats ? (
+                      <span className="inline-block w-8 h-3.5 bg-gray-800 animate-pulse rounded" />
+                    ) : (
+                      channelStats?.documents_count.toLocaleString() ?? '—'
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* Links Counter */}
+              <div className="flex items-center gap-2 bg-[#0d1117] border border-[#1f2937] px-3 py-1.5 rounded-xl">
+                <div className="w-7 h-7 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400">
+                  <Link2 className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <p className="text-[9px] uppercase font-semibold text-gray-400 tracking-wider">Links</p>
+                  <p className="text-xs sm:text-sm font-bold text-white font-mono">
+                    {loadingStats ? (
+                      <span className="inline-block w-8 h-3.5 bg-gray-800 animate-pulse rounded" />
+                    ) : (
+                      channelStats?.links_count.toLocaleString() ?? '—'
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 3. Search & Type Filter Toolbar */}
       {selectedChannel && (
@@ -312,20 +465,50 @@ export default function MediaGalleryPage() {
             />
           </div>
 
-          <div className="flex items-center gap-1 self-start sm:self-auto">
-            {(['all', 'video', 'photo', 'document'] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTypeFilter(t)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${
-                  typeFilter === t
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-[#0d1117] border border-[#1f2937] text-gray-400 hover:text-white'
-                }`}
-              >
-                {t}
-              </button>
-            ))}
+          <div className="flex items-center gap-1 self-start sm:self-auto overflow-x-auto">
+            <button
+              onClick={() => setTypeFilter('all')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                typeFilter === 'all'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-[#0d1117] border border-[#1f2937] text-gray-400 hover:text-white'
+              }`}
+            >
+              All {channelStats ? `(${channelStats.total_media.toLocaleString()})` : `(${mediaItems.length})`}
+            </button>
+            <button
+              onClick={() => setTypeFilter('video')}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                typeFilter === 'video'
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-[#0d1117] border border-[#1f2937] text-gray-400 hover:text-white'
+              }`}
+            >
+              <Film className="w-3 h-3" />
+              Videos {channelStats ? `(${channelStats.videos_count.toLocaleString()})` : ''}
+            </button>
+            <button
+              onClick={() => setTypeFilter('photo')}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                typeFilter === 'photo'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-[#0d1117] border border-[#1f2937] text-gray-400 hover:text-white'
+              }`}
+            >
+              <Image className="w-3 h-3" />
+              Photos {channelStats ? `(${channelStats.photos_count.toLocaleString()})` : ''}
+            </button>
+            <button
+              onClick={() => setTypeFilter('document')}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                typeFilter === 'document'
+                  ? 'bg-amber-600 text-white'
+                  : 'bg-[#0d1117] border border-[#1f2937] text-gray-400 hover:text-white'
+              }`}
+            >
+              <FileText className="w-3 h-3" />
+              Files {channelStats ? `(${channelStats.documents_count.toLocaleString()})` : ''}
+            </button>
           </div>
         </div>
       )}

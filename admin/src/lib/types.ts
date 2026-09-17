@@ -120,3 +120,18 @@ export interface TelegramMediaItem {
   thumb_url: string | null;
   stream_url?: string | null;
 }
+
+export interface TelegramChannelStats {
+  chat_id: number;
+  title: string;
+  username: string | null;
+  members_count: number | null;
+  videos_count: number;
+  photos_count: number;
+  documents_count: number;
+  audio_count: number;
+  links_count: number;
+  total_media: number;
+  assessment: string;
+  assessment_badge: string;
+}

@@ -7,10 +7,11 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
+import time
 import re
 import urllib.parse
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query, Response
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -616,10 +617,11 @@ def get_errors_endpoint(limit: int = 50):
 
 # --- Telegram Live Media & Folder APIs ---
 from config import Config
-from pyrogram import Client as TgClient
+from pyrogram import Client as TgClient, enums
 from pyrogram.raw.functions.messages import GetDialogFilters
 
 _api_tg_client: Optional[TgClient] = None
+_channel_stats_cache: Dict[int, tuple] = {}
 _thumb_cache: Dict[str, bytes] = {}
 THUMB_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "thumbs")
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
@@ -807,6 +809,77 @@ async def get_channel_media(chat_id: int, limit: int = 40):
             asyncio.create_task(_prefetch_thumbs(to_prefetch[:20]))
             
         return media_list
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/telegram/channel/{chat_id}/stats", dependencies=[Depends(verify_token)])
+async def get_channel_stats(chat_id: int):
+    now = time.time()
+    if chat_id in _channel_stats_cache:
+        cached_time, cached_data = _channel_stats_cache[chat_id]
+        if now - cached_time < 300:  # 5 min cache
+            return cached_data
+
+    try:
+        tg = await get_api_tg_client()
+        results = await asyncio.gather(
+            tg.search_messages_count(chat_id, filter=enums.MessagesFilter.VIDEO),
+            tg.search_messages_count(chat_id, filter=enums.MessagesFilter.PHOTO),
+            tg.search_messages_count(chat_id, filter=enums.MessagesFilter.DOCUMENT),
+            tg.search_messages_count(chat_id, filter=enums.MessagesFilter.AUDIO),
+            tg.search_messages_count(chat_id, filter=enums.MessagesFilter.URL),
+            tg.get_chat(chat_id),
+            return_exceptions=True
+        )
+
+        videos_count = results[0] if isinstance(results[0], int) else 0
+        photos_count = results[1] if isinstance(results[1], int) else 0
+        documents_count = results[2] if isinstance(results[2], int) else 0
+        audio_count = results[3] if isinstance(results[3], int) else 0
+        links_count = results[4] if isinstance(results[4], int) else 0
+        chat = results[5] if not isinstance(results[5], Exception) else None
+
+        title = chat.title if chat else f"Channel {chat_id}"
+        username = chat.username if chat and getattr(chat, "username", None) else None
+        members_count = chat.members_count if chat and getattr(chat, "members_count", None) else None
+        total_media = videos_count + photos_count + documents_count
+
+        # Smart evaluation / recommendation
+        if videos_count >= 100:
+            assessment = "Gold Video Source"
+            assessment_badge = "movie_dense"
+        elif videos_count >= 20:
+            assessment = "Active Movie Channel"
+            assessment_badge = "video_active"
+        elif documents_count >= 50:
+            assessment = "Document / File Archive"
+            assessment_badge = "doc_dense"
+        elif photos_count >= 50:
+            assessment = "Photo Gallery"
+            assessment_badge = "photo_dense"
+        elif total_media == 0:
+            assessment = "Empty Channel"
+            assessment_badge = "empty"
+        else:
+            assessment = "Low Content"
+            assessment_badge = "low"
+
+        stats_data = {
+            "chat_id": chat_id,
+            "title": title,
+            "username": username,
+            "members_count": members_count,
+            "videos_count": videos_count,
+            "photos_count": photos_count,
+            "documents_count": documents_count,
+            "audio_count": audio_count,
+            "links_count": links_count,
+            "total_media": total_media,
+            "assessment": assessment,
+            "assessment_badge": assessment_badge
+        }
+        _channel_stats_cache[chat_id] = (now, stats_data)
+        return stats_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
