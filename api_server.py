@@ -942,25 +942,45 @@ async def stream_media_endpoint(chat_id: int, message_id: int, request: Request)
         total_chunks = (end_chunk - start_chunk) + 1
         
         async def media_streamer():
+            # Pre-buffer queue holds up to 6MB ahead in RAM to eliminate playback stutter
+            buffer_queue = asyncio.Queue(maxsize=6)
+            
+            async def producer():
+                try:
+                    async for chunk in tg.stream_media(msg, offset=start_chunk, limit=total_chunks):
+                        if not chunk:
+                            break
+                        await buffer_queue.put(chunk)
+                except Exception as p_err:
+                    print(f"Stream producer error for {chat_id}/{message_id}: {p_err}")
+                finally:
+                    await buffer_queue.put(None)
+                    
+            producer_task = asyncio.create_task(producer())
+            
             bytes_left = content_length
-            offset = start_chunk
+            current_offset = start_chunk
             try:
-                async for chunk in tg.stream_media(msg, offset=offset, limit=total_chunks):
-                    if not chunk:
+                while bytes_left > 0:
+                    chunk = await buffer_queue.get()
+                    if chunk is None:
                         break
-                    if offset == start_chunk:
+                        
+                    if current_offset == start_chunk:
                         chunk_offset = start % chunk_size
                         chunk = chunk[chunk_offset:]
+                        
                     if len(chunk) > bytes_left:
                         chunk = chunk[:bytes_left]
+                        
                     bytes_left -= len(chunk)
                     yield chunk
-                    offset += 1
-                    if bytes_left <= 0:
-                        break
+                    current_offset += 1
             except Exception as stream_err:
-                print(f"Stream error for {chat_id}/{message_id}: {stream_err}")
-                return
+                print(f"Stream consumer error for {chat_id}/{message_id}: {stream_err}")
+            finally:
+                if not producer_task.done():
+                    producer_task.cancel()
 
         ascii_filename = re.sub(r'[^\x00-\x7F]+', '_', file_name).strip() or f"video_{message_id}.mp4"
         encoded_filename = urllib.parse.quote(file_name, encoding="utf-8")

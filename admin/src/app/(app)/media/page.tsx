@@ -475,6 +475,7 @@ export default function MediaGalleryPage() {
                     controls
                     autoPlay
                     playsInline
+                    preload="auto"
                     className="w-full h-full object-contain bg-black"
                     onLoadedData={() => {
                       setVideoError(null);
@@ -571,6 +572,12 @@ export default function MediaGalleryPage() {
                     Download Video
                   </a>
                 </div>
+              )}
+
+              {previewItem.media_type === 'video' && (
+                <p className="text-[11px] text-gray-500 italic">
+                  💡 Tip: High-bitrate 1080p movies ke smooth playback ke liye <strong>Open in VLC Player</strong> ya <strong>Copy Stream Link</strong> use karein (VLC pre-buffers 10s ahead bina buffering ke).
+                </p>
               )}
 
               {/* Technical Specifications */}
