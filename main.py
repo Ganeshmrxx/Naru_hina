@@ -7,6 +7,11 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
+import pyrogram.utils
+# Fix for 64-bit Telegram Channel IDs (channel IDs above 2.14 billion)
+pyrogram.utils.MIN_CHANNEL_ID = -1009999999999
+pyrogram.utils.MAX_CHANNEL_ID = -1000000000000
+
 from pyrogram.enums import ChatType
 
 from GeneralDataModifierBot import GeneralDataModifierBot

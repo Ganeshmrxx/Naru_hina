@@ -617,8 +617,14 @@ def get_errors_endpoint(limit: int = 50):
 
 # --- Telegram Live Media & Folder APIs ---
 from config import Config
+import pyrogram.utils
+# Fix for 64-bit Telegram Channel IDs (channel IDs above 2.14 billion)
+pyrogram.utils.MIN_CHANNEL_ID = -1009999999999
+pyrogram.utils.MAX_CHANNEL_ID = -1000000000000
+
 from pyrogram import Client as TgClient, enums
 from pyrogram.raw.functions.messages import GetDialogFilters
+from pyrogram.errors import FloodWait
 
 _api_tg_client: Optional[TgClient] = None
 _channel_stats_cache: Dict[int, tuple] = {}
@@ -641,6 +647,37 @@ async def get_api_tg_client() -> TgClient:
         await _api_tg_client.start()
     return _api_tg_client
 
+_channel_meta_cache: Dict[int, dict] = {}
+_meta_semaphore = asyncio.Semaphore(4)
+
+async def _resolve_channel_meta(tg: TgClient, chat_id: int) -> dict:
+    if chat_id in _channel_meta_cache:
+        return _channel_meta_cache[chat_id]
+    async with _meta_semaphore:
+        for attempt in range(2):
+            try:
+                chat = await tg.get_chat(chat_id)
+                meta = {
+                    "chat_id": chat.id,
+                    "title": chat.title or f"Chat {chat_id}",
+                    "username": chat.username,
+                    "is_public": bool(chat.username),
+                    "has_protected_content": getattr(chat, "has_protected_content", False)
+                }
+                _channel_meta_cache[chat_id] = meta
+                return meta
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception:
+                break
+        return {
+            "chat_id": chat_id,
+            "title": f"Chat {chat_id}",
+            "username": None,
+            "is_public": False,
+            "has_protected_content": False
+        }
+
 @app.get("/api/telegram/folders", dependencies=[Depends(verify_token)])
 async def get_telegram_folders():
     try:
@@ -655,36 +692,22 @@ async def get_telegram_folders():
             emoticon = getattr(f, "emoticon", "") or ""
             peers = getattr(f, "include_peers", [])
             
-            channels = []
+            chat_ids = []
             for p in peers:
                 cid = getattr(p, "channel_id", None) or getattr(p, "chat_id", None)
                 if not cid:
                     continue
                 chat_id = int(f"-100{cid}") if not str(cid).startswith("-") else cid
-                try:
-                    chat = await tg.get_chat(chat_id)
-                    channels.append({
-                        "chat_id": chat.id,
-                        "title": chat.title,
-                        "username": chat.username,
-                        "is_public": bool(chat.username),
-                        "has_protected_content": getattr(chat, "has_protected_content", False)
-                    })
-                except Exception:
-                    channels.append({
-                        "chat_id": chat_id,
-                        "title": f"Chat {chat_id}",
-                        "username": None,
-                        "is_public": False,
-                        "has_protected_content": False
-                    })
+                chat_ids.append(chat_id)
+                
+            channels = await asyncio.gather(*[_resolve_channel_meta(tg, cid) for cid in chat_ids])
                     
             folder_list.append({
                 "id": fid,
                 "title": title,
                 "emoticon": emoticon,
                 "channels_count": len(channels),
-                "channels": channels
+                "channels": list(channels)
             })
         return folder_list
     except Exception as e:
