@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
@@ -620,6 +620,10 @@ from pyrogram.raw.functions.messages import GetDialogFilters
 
 _api_tg_client: Optional[TgClient] = None
 _thumb_cache: Dict[str, bytes] = {}
+THUMB_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "thumbs")
+os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
+_thumb_file_id_map: Dict[str, str] = {}
+_thumb_semaphore = asyncio.Semaphore(4)
 
 async def get_api_tg_client() -> TgClient:
     global _api_tg_client
@@ -683,11 +687,32 @@ async def get_telegram_folders():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+async def _prefetch_thumbs(items):
+    try:
+        tg = await get_api_tg_client()
+        for cache_key, fid in items:
+            c_file = os.path.join(THUMB_CACHE_DIR, f"{cache_key}.jpg")
+            if os.path.isfile(c_file):
+                continue
+            try:
+                async with _thumb_semaphore:
+                    if os.path.isfile(c_file):
+                        continue
+                    res = await tg.download_media(fid, in_memory=True)
+                    if res and hasattr(res, "getvalue"):
+                        with open(c_file, "wb") as f:
+                            f.write(res.getvalue())
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 @app.get("/api/telegram/channel/{chat_id}/media", dependencies=[Depends(verify_token)])
 async def get_channel_media(chat_id: int, limit: int = 40):
     try:
         tg = await get_api_tg_client()
         media_list = []
+        to_prefetch = []
         
         async for msg in tg.get_chat_history(chat_id, limit=limit):
             m_type = None
@@ -695,13 +720,16 @@ async def get_channel_media(chat_id: int, limit: int = 40):
             file_size = 0
             duration = None
             has_thumb = False
+            file_to_download = None
             
             if msg.video:
                 m_type = "video"
                 file_name = msg.video.file_name or f"video_{msg.id}.mp4"
                 file_size = msg.video.file_size or 0
                 duration = msg.video.duration
-                has_thumb = bool(msg.video.thumbs)
+                if msg.video.thumbs:
+                    has_thumb = True
+                    file_to_download = msg.video.thumbs[0].file_id
             elif msg.document:
                 is_video_doc = False
                 if msg.document.mime_type and msg.document.mime_type.startswith("video/"):
@@ -715,14 +743,27 @@ async def get_channel_media(chat_id: int, limit: int = 40):
                     m_type = "document"
                 file_name = msg.document.file_name or f"doc_{msg.id}"
                 file_size = msg.document.file_size or 0
-                has_thumb = bool(msg.document.thumbs)
+                if msg.document.thumbs:
+                    has_thumb = True
+                    file_to_download = msg.document.thumbs[0].file_id
             elif msg.photo:
                 m_type = "photo"
                 file_name = f"photo_{msg.id}.jpg"
                 has_thumb = True
+                if getattr(msg.photo, "thumbs", None):
+                    file_to_download = msg.photo.thumbs[0].file_id
+                else:
+                    file_to_download = msg.photo.file_id
                 
             if not m_type:
                 continue
+
+            cache_key = f"{chat_id}_{msg.id}"
+            if has_thumb and file_to_download:
+                _thumb_file_id_map[cache_key] = file_to_download
+                c_file = os.path.join(THUMB_CACHE_DIR, f"{cache_key}.jpg")
+                if not os.path.isfile(c_file):
+                    to_prefetch.append((cache_key, file_to_download))
                 
             # Formatted size
             if file_size > 1024 * 1024 * 1024:
@@ -760,6 +801,10 @@ async def get_channel_media(chat_id: int, limit: int = 40):
                 "stream_url": f"/api/telegram/media/{chat_id}/{msg.id}/stream" if (m_type == "video" or m_type == "document") else None
             })
             
+        # Launch background pre-fetch for the first 20 thumbnails
+        if to_prefetch:
+            asyncio.create_task(_prefetch_thumbs(to_prefetch[:20]))
+            
         return media_list
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -767,51 +812,72 @@ async def get_channel_media(chat_id: int, limit: int = 40):
 @app.get("/api/telegram/media/{chat_id}/{message_id}/thumb")
 async def get_media_thumbnail(chat_id: int, message_id: int):
     cache_key = f"{chat_id}_{message_id}"
+    cache_file = os.path.join(THUMB_CACHE_DIR, f"{cache_key}.jpg")
     cache_headers = {
-        "Cache-Control": "public, max-age=86400, immutable",
+        "Cache-Control": "public, max-age=604800, immutable",
         "Access-Control-Allow-Origin": "*",
     }
+    
+    # 1. Check persistent disk cache (< 1 millisecond)
+    if os.path.isfile(cache_file):
+        return FileResponse(cache_file, media_type="image/jpeg", headers=cache_headers)
+
+    # 2. Check in-memory RAM cache
     if cache_key in _thumb_cache:
         return Response(content=_thumb_cache[cache_key], media_type="image/jpeg", headers=cache_headers)
         
     try:
         tg = await get_api_tg_client()
-        msg = await tg.get_messages(chat_id, message_id)
-        if not msg:
-            raise HTTPException(status_code=404, detail="Message not found")
+        file_to_download = _thumb_file_id_map.get(cache_key)
         
-        file_to_download = None
-        if msg.video and msg.video.thumbs:
-            file_to_download = msg.video.thumbs[0].file_id
-        elif msg.photo:
-            if getattr(msg.photo, "thumbs", None):
-                file_to_download = msg.photo.thumbs[0].file_id
-            else:
-                file_to_download = msg.photo.file_id
-        elif msg.document and msg.document.thumbs:
-            file_to_download = msg.document.thumbs[0].file_id
-            
+        # If not pre-mapped, fetch single message from Telegram
+        if not file_to_download:
+            msg = await tg.get_messages(chat_id, message_id)
+            if not msg:
+                raise HTTPException(status_code=404, detail="Message not found")
+            if msg.video and msg.video.thumbs:
+                file_to_download = msg.video.thumbs[0].file_id
+            elif msg.photo:
+                if getattr(msg.photo, "thumbs", None):
+                    file_to_download = msg.photo.thumbs[0].file_id
+                else:
+                    file_to_download = msg.photo.file_id
+            elif msg.document and msg.document.thumbs:
+                file_to_download = msg.document.thumbs[0].file_id
+                
         if not file_to_download:
             raise HTTPException(status_code=404, detail="No thumbnail available for this message")
             
-        thumb_stream = await tg.download_media(file_to_download, in_memory=True)
-        if thumb_stream:
-            if hasattr(thumb_stream, "getvalue"):
-                img_bytes = thumb_stream.getvalue()
-            elif isinstance(thumb_stream, (bytes, bytearray)):
-                img_bytes = bytes(thumb_stream)
-            elif isinstance(thumb_stream, str) and os.path.exists(thumb_stream):
-                with open(thumb_stream, "rb") as f:
-                    img_bytes = f.read()
-            else:
-                raise HTTPException(status_code=500, detail="Unsupported thumb stream type")
+        async with _thumb_semaphore:
+            # Double check disk in case another task finished it
+            if os.path.isfile(cache_file):
+                return FileResponse(cache_file, media_type="image/jpeg", headers=cache_headers)
                 
-            # Keep cache size bounded
-            if len(_thumb_cache) > 500:
-                _thumb_cache.pop(next(iter(_thumb_cache)))
-            _thumb_cache[cache_key] = img_bytes
-            return Response(content=img_bytes, media_type="image/jpeg", headers=cache_headers)
-            
+            thumb_stream = await tg.download_media(file_to_download, in_memory=True)
+            if thumb_stream:
+                if hasattr(thumb_stream, "getvalue"):
+                    img_bytes = thumb_stream.getvalue()
+                elif isinstance(thumb_stream, (bytes, bytearray)):
+                    img_bytes = bytes(thumb_stream)
+                elif isinstance(thumb_stream, str) and os.path.exists(thumb_stream):
+                    with open(thumb_stream, "rb") as f:
+                        img_bytes = f.read()
+                else:
+                    raise HTTPException(status_code=500, detail="Unsupported thumb stream type")
+                    
+                # Save to disk cache
+                try:
+                    with open(cache_file, "wb") as f:
+                        f.write(img_bytes)
+                except Exception as save_err:
+                    print(f"Error saving thumb disk cache: {save_err}")
+                    
+                # Keep RAM cache bounded
+                if len(_thumb_cache) > 500:
+                    _thumb_cache.pop(next(iter(_thumb_cache)))
+                _thumb_cache[cache_key] = img_bytes
+                return Response(content=img_bytes, media_type="image/jpeg", headers=cache_headers)
+                
         raise HTTPException(status_code=404, detail="Failed to load thumbnail")
     except HTTPException:
         raise
