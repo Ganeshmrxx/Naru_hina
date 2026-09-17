@@ -14,8 +14,6 @@ except RuntimeError:
 # Import bot classes
 from MovieForwarderBot import MovieForwarderBot
 from TeraBoxModifierBot import TeraBoxModifierBot
-from PromotionSpamBot1 import PromotionSpamBot1
-from PromotionSpamBot2 import PromotionSpamBot2
 from BackupForwarderBot import BackupForwarderBot
 from GeneralDataModifierBot import GeneralDataModifierBot
 import re
@@ -57,18 +55,6 @@ class BotManager:
             "class": TeraBoxModifierBot,
             "session_type": "bot_token",
             "description": "Rewrites TeraBox links & auto-posts videos"
-        },
-        "promoter_1": {
-            "name": "Promoter Bot 1",
-            "class": PromotionSpamBot1,
-            "session_type": "userbot",
-            "description": "DM conversion funnel & periodic group broadcasting"
-        },
-        "promoter_2": {
-            "name": "Promoter Bot 2",
-            "class": PromotionSpamBot2,
-            "session_type": "userbot",
-            "description": "DM conversion funnel & periodic group broadcasting (replica)"
         },
         "backup_forwarder": {
             "name": "Backup Forwarder",
@@ -130,8 +116,8 @@ class BotManager:
             for bot_id, cfg in self.BOT_CONFIGS.items()
         }
 
-        self.spam_enabled = {"promoter_1": False, "promoter_2": False}
-        self.promote_enabled = {"promoter_1": True, "promoter_2": True}
+        self.spam_enabled = {}
+        self.promote_enabled = {}
         self.background_tasks = {}
         self.forward_jobs = {}  # In-memory tracking for active bulk forward jobs
         self.dialogs_cache = []

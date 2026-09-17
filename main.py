@@ -18,8 +18,6 @@ from GeneralDataModifierBot import GeneralDataModifierBot
 from TeraBoxModifierBot import TeraBoxModifierBot
 from MovieForwarderBot import MovieForwarderBot
 from BackupForwarderBot import BackupForwarderBot
-from PromotionSpamBot1 import PromotionSpamBot1
-from PromotionSpamBot2 import PromotionSpamBot2
 
 import time
 from datetime import datetime, timedelta, date
@@ -32,7 +30,7 @@ from pyrogram.errors import FloodWait, Forbidden, ChannelPrivate, ChatWriteForbi
 import requests
 
 
-TARGET_CHANNEL_ID = -1003660252652  # archive / DB channel
+TARGET_CHANNEL_ID = -1004401442087  # DBXVideos target channel
 STATUS_CHAT_ID = "me"  # your user ID or log channel
 
 MIN_DELAY = 1
@@ -737,14 +735,10 @@ async def preload_dialogs(bot):
 async def main():
     movie_forwarder = MovieForwarderBot()
     terabox_modifier = TeraBoxModifierBot()
-    promoter_bot_1 = PromotionSpamBot1()
-    # promoter_bot_2 = PromotionSpamBot2()
 
     bots = {
         "Movie Forwarder": movie_forwarder,
         "TeraBox Modifier": terabox_modifier,
-        "Promoter Bot 1": promoter_bot_1,
-        # "Promoter Bot 2": promoter_bot_2
     }
 
     print("🚀 Starting bots one by one...")
@@ -759,17 +753,7 @@ async def main():
             print(f"⚠️ Error: {e}")
             if "AUTH_KEY_DUPLICATED" in str(e):
                 print(f"🚨 CRITICAL: The session for '{name}' is being used elsewhere!")
-            # We continue starting other bots even if one fails
             continue
-
-    # Start spam tasks for Promotion Bots (only if they are connected)
-    if promoter_bot_1.is_connected:
-        asyncio.create_task(promote_ganeshmrxx(promoter_bot_1, "Promoter1"))
-        asyncio.create_task(spam_groups(promoter_bot_1, "Promoter1", min_sec=3600, max_sec=10800))
-    
-    if promoter_bot_2.is_connected:
-        asyncio.create_task(promote_ganeshmrxx(promoter_bot_2, "Promoter2"))
-        asyncio.create_task(spam_groups(promoter_bot_2, "Promoter2", min_sec=3600, max_sec=10800))
 
     print("All checks completed. Connected bots are running...")
     await asyncio.Event().wait()  # Keep alive

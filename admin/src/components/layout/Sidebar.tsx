@@ -18,8 +18,6 @@ const navigation = [
   { name: 'All Bots', href: '/bots', icon: Bot },
   { name: 'Movie Forwarder', href: '/bots/movie-forwarder', icon: Film },
   { name: 'TeraBox Modifier', href: '/bots/terabox', icon: Zap },
-  { name: 'Promoter 1', href: '/bots/promoter-1', icon: Megaphone },
-  { name: 'Promoter 2', href: '/bots/promoter-2', icon: Megaphone },
   { name: 'Backup Forwarder', href: '/bots/backup-forwarder', icon: HardDrive },
   { name: 'Data Modifier', href: '/bots/data-modifier', icon: Settings },
   { type: 'divider', label: 'Data' },

@@ -6,6 +6,11 @@ sys.stdout.reconfigure(encoding='utf-8')
 sys.path.append(r"e:\Ganesh\ANIGRAVITY\allforward")
 
 import re
+import pyrogram.utils
+# Fix for 64-bit Telegram Channel IDs
+pyrogram.utils.MIN_CHANNEL_ID = -1009999999999
+pyrogram.utils.MAX_CHANNEL_ID = -1000000000000
+
 from pyrogram import Client
 from pyrogram.raw.functions.messages import GetDialogFilters, UpdateDialogFilter
 from pyrogram.raw.types import DialogFilter

@@ -3,8 +3,8 @@
 # Keywords list
 KEYWORDS = ["oyo", "latest", "viral", "hot", "new", "trending", "webseries", "mms", "hotel", "punjabi", "college", "telugu"]
 
-# Target channels for auto-send
-TARGET_CHANNELS = [-1003432400529, -1003858031435]
+# Target channels for auto-send (DBXTera included)
+TARGET_CHANNELS = [-1004337870091, -1003432400529, -1003858031435]
 
 # API settings
 SEARCH_API = "https://playterabox.com/api/search-videos"
