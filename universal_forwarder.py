@@ -266,7 +266,73 @@ class UniversalForwarder:
                         channel_ids.append(int(f"-100{cid}"))
         return channel_ids
 
-    async def copy_public_message(self, source_username: str, chat_id: int, chat_title: str, msg: Any, target_id: int) -> bool:
+    async def remove_channel_from_folder(self, folder_id: int, chat_id: int) -> bool:
+        """Removes a channel from a Telegram dialog filter (folder)."""
+        try:
+            filters = await self.user_app.invoke(raw.functions.messages.GetDialogFilters())
+            target_filter = None
+            for f in filters:
+                if getattr(f, 'id', None) == folder_id:
+                    target_filter = f
+                    break
+
+            if not target_filter:
+                print(f"   [FOLDER] Folder ID {folder_id} not found.", flush=True)
+                return False
+
+            def peer_matches(peer) -> bool:
+                cid = getattr(peer, 'channel_id', getattr(peer, 'chat_id', getattr(peer, 'user_id', None)))
+                if cid is None:
+                    return False
+                if cid == chat_id or cid == abs(chat_id):
+                    return True
+                try:
+                    if int(f"-100{cid}") == chat_id:
+                        return True
+                except (ValueError, TypeError):
+                    pass
+                try:
+                    clean_target = int(str(chat_id).replace("-100", "").replace("-", ""))
+                    if cid == clean_target:
+                        return True
+                except (ValueError, TypeError):
+                    pass
+                return False
+
+            orig_include = getattr(target_filter, 'include_peers', [])
+            new_include_peers = [p for p in orig_include if not peer_matches(p)]
+            orig_pinned = getattr(target_filter, 'pinned_peers', [])
+            new_pinned_peers = [p for p in orig_pinned if not peer_matches(p)]
+
+            if len(new_include_peers) == len(orig_include) and len(new_pinned_peers) == len(orig_pinned):
+                print(f"   [FOLDER] Channel {chat_id} was already not present in folder {folder_id}.", flush=True)
+                return True
+
+            updated_filter = raw.types.DialogFilter(
+                id=target_filter.id,
+                title=target_filter.title,
+                emoticon=getattr(target_filter, 'emoticon', None),
+                pinned_peers=new_pinned_peers,
+                include_peers=new_include_peers,
+                exclude_peers=getattr(target_filter, 'exclude_peers', []),
+                contacts=getattr(target_filter, 'contacts', None),
+                non_contacts=getattr(target_filter, 'non_contacts', None),
+                groups=getattr(target_filter, 'groups', None),
+                broadcasts=getattr(target_filter, 'broadcasts', None),
+                bots=getattr(target_filter, 'bots', None),
+                exclude_muted=getattr(target_filter, 'exclude_muted', None),
+                exclude_read=getattr(target_filter, 'exclude_read', None),
+                exclude_archived=getattr(target_filter, 'exclude_archived', None),
+            )
+
+            await self.user_app.invoke(raw.functions.messages.UpdateDialogFilter(id=folder_id, filter=updated_filter))
+            print(f"   [FOLDER SUCCESS] Auto-removed {chat_id} from Folder '{target_filter.title}' (ID {folder_id}). Remaining: {len(new_include_peers)} channels.", flush=True)
+            return True
+        except Exception as e:
+            print(f"   [FOLDER ERROR] Failed to remove channel {chat_id} from folder {folder_id}: {e}", flush=True)
+            return False
+
+    async def copy_public_message(self, source_username: str, chat_id: int, chat_title: str, msg: Any, target_id: int, folder_id: int = 5) -> bool:
         """Copies message using 1 active bot at a time (rotating every 10 messages)."""
         await self.initialize_worker_bots_if_needed()
         bot = self.get_next_worker_bot()
@@ -292,12 +358,12 @@ class UniversalForwarder:
         except FloodWait as e:
             print(f"   [Worker @{bot_me.username}] FloodWait: Sleeping {e.value + 2}s...", flush=True)
             await asyncio.sleep(e.value + 2)
-            return await self.copy_private_message(chat_id, chat_title, msg, target_id)
+            return await self.copy_private_message(chat_id, chat_title, msg, target_id, folder_id=folder_id)
         except Exception as e:
             print(f"   [Worker @{bot_me.username}] Error ({e}), falling back to Userbot...", flush=True)
-            return await self.copy_private_message(chat_id, chat_title, msg, target_id)
+            return await self.copy_private_message(chat_id, chat_title, msg, target_id, folder_id=folder_id)
 
-    async def copy_private_message(self, chat_id: int, chat_title: str, msg: Any, target_id: int) -> bool:
+    async def copy_private_message(self, chat_id: int, chat_title: str, msg: Any, target_id: int, folder_id: int = 5) -> bool:
         """Copies message directly using Userbot."""
         caption = build_caption(msg.caption, chat_id, chat_title)
         try:
@@ -317,11 +383,14 @@ class UniversalForwarder:
                 )
             return True
         except ChatForwardsRestricted:
+            if folder_id == 5:
+                # videoDB must NEVER use Mode C (download/upload) to avoid filling server disk
+                raise
             return await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
         except FloodWait as e:
             print(f"   [Userbot] FloodWait: Sleeping {e.value + 2}s...", flush=True)
             await asyncio.sleep(e.value + 2)
-            return await self.copy_private_message(chat_id, chat_title, msg, target_id)
+            return await self.copy_private_message(chat_id, chat_title, msg, target_id, folder_id=folder_id)
         except Exception as e:
             print(f"   [Userbot] Copy error for msg {msg.id}: {e}", flush=True)
             return False
@@ -401,7 +470,7 @@ class UniversalForwarder:
                 except Exception:
                     pass
 
-    async def copy_public_media_group(self, source_username: str, chat_id: int, chat_title: str, msg_id: int, target_id: int) -> bool:
+    async def copy_public_media_group(self, source_username: str, chat_id: int, chat_title: str, msg_id: int, target_id: int, folder_id: int = 5) -> bool:
         """Copies an entire media group using the active worker bot."""
         await self.initialize_worker_bots_if_needed()
         bot = self.get_next_worker_bot()
@@ -418,12 +487,12 @@ class UniversalForwarder:
         except FloodWait as e:
             print(f"   [Worker @{bot_me.username}] FloodWait in album: Sleeping {e.value + 2}s...", flush=True)
             await asyncio.sleep(e.value + 2)
-            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id)
+            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id, folder_id=folder_id)
         except Exception as e:
             print(f"   [Worker @{bot_me.username}] Album copy error ({e}), falling back to Userbot...", flush=True)
-            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id)
+            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id, folder_id=folder_id)
 
-    async def copy_private_media_group(self, chat_id: int, chat_title: str, msg_id: int, target_id: int) -> bool:
+    async def copy_private_media_group(self, chat_id: int, chat_title: str, msg_id: int, target_id: int, folder_id: int = 5) -> bool:
         """Copies an entire media group using the Userbot."""
         caption = build_caption(None, chat_id, chat_title)
         try:
@@ -435,6 +504,9 @@ class UniversalForwarder:
             )
             return True
         except ChatForwardsRestricted:
+            if folder_id == 5:
+                # videoDB must NEVER use Mode C (download/upload) to avoid filling server disk
+                raise
             try:
                 group_msgs = await self.user_app.get_media_group(chat_id, msg_id)
                 return await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
@@ -444,7 +516,7 @@ class UniversalForwarder:
         except FloodWait as e:
             print(f"   [Userbot] Album FloodWait: Sleeping {e.value + 2}s...", flush=True)
             await asyncio.sleep(e.value + 2)
-            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id)
+            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id, folder_id=folder_id)
         except Exception as e:
             print(f"   [Userbot] copy_media_group error for msg {msg_id}: {e}", flush=True)
             return False
@@ -515,6 +587,7 @@ class UniversalForwarder:
         global CURRENT_ACTIVE_CHANNEL
         chat_id = item["chat_id"]
         chat_title = item["title"]
+        folder_id = item.get("folder_id", 5)
         folder_name = item["folder_name"]
         target_id = item["target_id"]
         target_name = item["target_name"]
@@ -533,9 +606,29 @@ class UniversalForwarder:
         is_public = bool(chat.username)
         is_restricted = getattr(chat, 'has_protected_content', False)
 
+        # ==============================================================
+        # RESTRICTED POLICY CHECK
+        # - Folder 5 (videoDB): Mode C forbidden! Auto-remove from folder.
+        # - Folder 6 (TeraDB): Mode C active (Download & Upload via Userbot).
+        # ==============================================================
         if is_restricted:
-            mode_desc = "Mode C: Restricted (Download & Upload via Userbot)"
-            channel_type = "restricted"
+            if folder_id == 5:
+                print("\n" + "!" * 70, flush=True)
+                print(f"[RESTRICTED DETECTED in videoDB] Channel '{chat_title}' ({chat_id}) has copy protection!", flush=True)
+                print("   Mode C (Download & Upload) is DISABLED for videoDB to protect 512MB disk.", flush=True)
+                print(f"   Auto-removing '{chat_title}' from videoDB folder (Folder 5)...", flush=True)
+                await self.remove_channel_from_folder(folder_id, chat_id)
+                save_channel_progress(
+                    chat_id, chat_title, folder_name, target_id, target_name,
+                    0, 0, "removed_restricted", "restricted"
+                )
+                queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
+                print(f"   Successfully removed '{chat_title}' from videoDB. Moving to next channel.", flush=True)
+                print("!" * 70 + "\n", flush=True)
+                return
+            else:
+                mode_desc = "Mode C: Restricted (Download & Upload via Userbot)"
+                channel_type = "restricted"
         elif is_public:
             mode_desc = f"Mode A: Public (@{chat.username}) (12 Bots Rotation, 1 Bot at a time)"
             channel_type = "public"
@@ -637,12 +730,26 @@ class UniversalForwarder:
 
                     print(f"   [ALBUM] Copying complete media group (Group ID: {group_id}, {len(group_msgs)} items)...", flush=True)
                     success = False
-                    if is_restricted:
-                        success = await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
-                    elif is_public:
-                        success = await self.copy_public_media_group(chat.username, chat_id, chat_title, msg.id, target_id)
-                    else:
-                        success = await self.copy_private_media_group(chat_id, chat_title, msg.id, target_id)
+                    try:
+                        if is_restricted:
+                            success = await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
+                        elif is_public:
+                            success = await self.copy_public_media_group(chat.username, chat_id, chat_title, msg.id, target_id, folder_id=folder_id)
+                        else:
+                            success = await self.copy_private_media_group(chat_id, chat_title, msg.id, target_id, folder_id=folder_id)
+                    except ChatForwardsRestricted:
+                        if folder_id == 5:
+                            print(f"\n[RESTRICTED ENCOUNTERED in videoDB] Album {group_id} in '{chat_title}' ({chat_id}) is restricted!", flush=True)
+                            print(f"   Auto-removing '{chat_title}' from videoDB folder...", flush=True)
+                            await self.remove_channel_from_folder(folder_id, chat_id)
+                            save_channel_progress(
+                                chat_id, chat_title, folder_name, target_id, target_name,
+                                current_id - 1, total_copied, "removed_restricted", "restricted"
+                            )
+                            queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
+                            return
+                        else:
+                            success = await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
 
                     if success:
                         items_count = len(group_msgs)
@@ -689,12 +796,26 @@ class UniversalForwarder:
 
                 # Execute transfer using single active worker
                 success = False
-                if is_restricted:
-                    success = await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
-                elif is_public:
-                    success = await self.copy_public_message(chat.username, chat_id, chat_title, msg, target_id)
-                else:
-                    success = await self.copy_private_message(chat_id, chat_title, msg, target_id)
+                try:
+                    if is_restricted:
+                        success = await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
+                    elif is_public:
+                        success = await self.copy_public_message(chat.username, chat_id, chat_title, msg, target_id, folder_id=folder_id)
+                    else:
+                        success = await self.copy_private_message(chat_id, chat_title, msg, target_id, folder_id=folder_id)
+                except ChatForwardsRestricted:
+                    if folder_id == 5:
+                        print(f"\n[RESTRICTED ENCOUNTERED in videoDB] Msg {msg.id} in '{chat_title}' ({chat_id}) is restricted!", flush=True)
+                        print(f"   Auto-removing '{chat_title}' from videoDB folder...", flush=True)
+                        await self.remove_channel_from_folder(folder_id, chat_id)
+                        save_channel_progress(
+                            chat_id, chat_title, folder_name, target_id, target_name,
+                            current_id - 1, total_copied, "removed_restricted", "restricted"
+                        )
+                        queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
+                        return
+                    else:
+                        success = await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
 
                 if success:
                     total_copied += 1
@@ -752,12 +873,13 @@ class UniversalForwarder:
                     "target_name": f_cfg["target_name"]
                 })
 
-        # Filter out already completed channels from active processing
+        # Filter out already completed or removed channels from active processing
         pending_queue = []
         for item in full_queue:
             prog = get_channel_progress(item["chat_id"])
-            if prog.get("status") == "completed":
-                print(f"   [SKIP COMPLETED] {item['title']} is already finished.", flush=True)
+            status = prog.get("status")
+            if status in ["completed", "removed_restricted"]:
+                print(f"   [SKIP {status.upper()}] {item['title']} (status: {status})", flush=True)
             else:
                 pending_queue.append(item)
 
