@@ -1,5 +1,5 @@
 interface StatusBadgeProps {
-  status: 'online' | 'offline' | 'warning' | 'error' | 'pending' | 'running' | 'done' | 'notnow';
+  status: string;
   label?: string;
 }
 
@@ -12,6 +12,10 @@ const statusStyles: Record<string, string> = {
   running: 'bg-green-400/10 text-green-400 border-green-400/20',
   done: 'bg-gray-400/10 text-gray-400 border-gray-400/20',
   notnow: 'bg-yellow-400/10 text-yellow-400 border-yellow-400/20',
+  queued: 'bg-amber-400/10 text-amber-400 border-amber-400/20',
+  in_progress: 'bg-blue-400/10 text-blue-400 border-blue-400/20',
+  completed: 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20',
+  removed_restricted: 'bg-rose-400/10 text-rose-400 border-rose-400/20',
 };
 
 const dotStyles: Record<string, string> = {
@@ -23,6 +27,10 @@ const dotStyles: Record<string, string> = {
   running: 'bg-green-400',
   done: 'bg-gray-400',
   notnow: 'bg-yellow-400',
+  queued: 'bg-amber-400',
+  in_progress: 'bg-blue-400 animate-pulse',
+  completed: 'bg-emerald-400',
+  removed_restricted: 'bg-rose-400',
 };
 
 export function StatusBadge({ status, label }: StatusBadgeProps) {

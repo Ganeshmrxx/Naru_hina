@@ -135,3 +135,57 @@ export interface TelegramChannelStats {
   assessment: string;
   assessment_badge: string;
 }
+
+export interface UniversalForwardProgress {
+  chat_id: number;
+  source_id?: number;
+  source_name: string;
+  folder_name: string;
+  target_id: number;
+  target_name: string;
+  last_msg_id: number;
+  total_copied: number;
+  grouped_copied?: number;
+  status: string;
+  channel_type: string;
+  updated_at?: string;
+}
+
+export interface UniversalQueueItem {
+  queue_position: number;
+  chat_id: number;
+  title: string;
+  folder_name: string;
+  folder_id: number;
+  target_id: number;
+  target_name: string;
+  status: 'queued' | 'in_progress' | 'completed' | 'removed_restricted' | string;
+  updated_at?: string;
+}
+
+export interface GroupedAlbumItem {
+  channel_id: number;
+  channel_title: string;
+  group_id: string;
+  target_id: number;
+  items_count: number;
+  message_ids: number[];
+  copied_at: string;
+}
+
+export interface UniversalFolderInfo {
+  id: number;
+  name: string;
+  target: string;
+  target_id: number;
+  mode_c: boolean;
+}
+
+export interface UniversalStatusResponse {
+  active_progress: UniversalForwardProgress | null;
+  total_queued: number;
+  total_completed: number;
+  total_restricted_removed: number;
+  total_grouped_albums: number;
+  folders: UniversalFolderInfo[];
+}

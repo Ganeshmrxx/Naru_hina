@@ -319,6 +319,87 @@ def get_progress():
     docs = list(db_a.forward_progress.find({}, {"_id": 0}))
     return docs
 
+# --- Universal Forwarder (Folder 5 & 6) Endpoints ---
+@app.get("/api/forwarding/universal/status", dependencies=[Depends(verify_token)])
+def get_universal_status():
+    if db_a is None:
+        return {
+            "active_progress": None,
+            "total_queued": 0,
+            "total_completed": 0,
+            "total_restricted_removed": 0,
+            "total_grouped_albums": 0,
+            "folders": [
+                {"id": 5, "name": "videoDB", "target": "DBXVideos", "target_id": -1004401442087, "mode_c": False},
+                {"id": 6, "name": "TeraDB", "target": "DBXTera", "target_id": -1004337870091, "mode_c": True},
+            ]
+        }
+    try:
+        active_prog = db_a.forward_progress.find_one({"status": "in_progress"}, {"_id": 0})
+        if not active_prog:
+            active_prog = db_a.forward_progress.find_one({}, {"_id": 0}, sort=[("updated_at", -1)])
+            
+        total_queued = db_a.forward_queue.count_documents({"status": {"$in": ["queued", "in_progress", "pending"]}})
+        total_completed = db_a.forward_queue.count_documents({"status": {"$in": ["completed", "done"]}})
+        total_removed = db_a.forward_queue.count_documents({"status": "removed_restricted"})
+        total_grouped = db_a.grouped_messages.count_documents({})
+        
+        if active_prog and isinstance(active_prog.get("updated_at"), datetime):
+            active_prog["updated_at"] = active_prog["updated_at"].isoformat()
+            
+        return {
+            "active_progress": active_prog,
+            "total_queued": total_queued,
+            "total_completed": total_completed,
+            "total_restricted_removed": total_removed,
+            "total_grouped_albums": total_grouped,
+            "folders": [
+                {"id": 5, "name": "videoDB", "target": "DBXVideos", "target_id": -1004401442087, "mode_c": False},
+                {"id": 6, "name": "TeraDB", "target": "DBXTera", "target_id": -1004337870091, "mode_c": True},
+            ]
+        }
+    except Exception as e:
+        print(f"Error querying universal status: {e}")
+        return {"error": str(e)}
+
+@app.get("/api/forwarding/universal/queue", dependencies=[Depends(verify_token)])
+def get_universal_queue(folder_id: Optional[int] = None, status: Optional[str] = None):
+    if db_a is None:
+        return []
+    try:
+        query: Dict[str, Any] = {}
+        if folder_id:
+            query["folder_id"] = folder_id
+        if status and status != "all":
+            query["status"] = status
+        
+        docs = list(db_a.forward_queue.find(query, {"_id": 0}).sort([("queue_position", 1)]))
+        for doc in docs:
+            if isinstance(doc.get("updated_at"), datetime):
+                doc["updated_at"] = doc["updated_at"].isoformat()
+        return docs
+    except Exception as e:
+        print(f"Error fetching universal queue: {e}")
+        return []
+
+@app.get("/api/forwarding/universal/grouped", dependencies=[Depends(verify_token)])
+def get_universal_grouped(limit: int = Query(50, ge=1, le=200), channel_id: Optional[int] = None):
+    if db_a is None:
+        return {"total": 0, "albums": []}
+    try:
+        query: Dict[str, Any] = {}
+        if channel_id:
+            query["channel_id"] = channel_id
+        total = db_a.grouped_messages.count_documents(query)
+        albums = list(db_a.grouped_messages.find(query, {"_id": 0}).sort("copied_at", -1).limit(limit))
+        for album in albums:
+            if isinstance(album.get("copied_at"), datetime):
+                album["copied_at"] = album["copied_at"].isoformat()
+        return {"total": total, "albums": albums}
+    except Exception as e:
+        print(f"Error fetching grouped messages: {e}")
+        return {"total": 0, "albums": []}
+
 # --- Bulk Forwarding & Jobs ---
 class BulkForwardRequest(BaseModel):
     source_id: int

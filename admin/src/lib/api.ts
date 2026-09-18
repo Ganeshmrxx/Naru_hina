@@ -1,4 +1,4 @@
-import { TelegramFolder, TelegramMediaItem, TelegramChannelStats } from './types';
+import { TelegramFolder, TelegramMediaItem, TelegramChannelStats, UniversalStatusResponse, UniversalQueueItem, GroupedAlbumItem } from './types';
 
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
@@ -145,6 +145,26 @@ class ApiClient {
 
   async getForwardingProgress() {
     return this.request<Record<string, unknown>[]>('/api/forwarding/progress');
+  }
+
+  // Universal Forwarder (Folder 5 & 6)
+  async getUniversalForwarderStatus() {
+    return this.request<UniversalStatusResponse>('/api/forwarding/universal/status');
+  }
+
+  async getUniversalForwarderQueue(folder_id?: number, status?: string) {
+    const params = new URLSearchParams();
+    if (folder_id) params.set('folder_id', folder_id.toString());
+    if (status && status !== 'all') params.set('status', status);
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return this.request<UniversalQueueItem[]>(`/api/forwarding/universal/queue${query}`);
+  }
+
+  async getUniversalForwarderGrouped(limit: number = 50, channel_id?: number) {
+    const params = new URLSearchParams();
+    params.set('limit', limit.toString());
+    if (channel_id) params.set('channel_id', channel_id.toString());
+    return this.request<{ total: number; albums: GroupedAlbumItem[] }>(`/api/forwarding/universal/grouped?${params.toString()}`);
   }
 
   // Mappings
