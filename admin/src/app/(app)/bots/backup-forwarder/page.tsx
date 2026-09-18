@@ -6,7 +6,8 @@ import {
   HardDrive, Play, Square, RotateCw, RefreshCw, ArrowLeft,
   Plus, CheckCircle2, ShieldCheck, ScrollText, Radio,
   Search, Users, Trash2, Folder, Film, Database,
-  ArrowRight, Zap, Crown, Check, X, Sparkles, FolderCheck, MinusCircle, Globe
+  ArrowRight, Zap, Crown, Check, X, Sparkles, FolderCheck, MinusCircle, Globe,
+  Loader2, Clock
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -372,10 +373,10 @@ export default function BackupForwarderDetailPage() {
           </div>
           <div>
             <h4 className="text-xs font-semibold text-white">
-              Automatic Telegram Folder Routing Active (3 Target Folders)
+              100% Automatic Telegram Folder Forwarder & Auto-History Sync Active
             </h4>
             <p className="text-[11px] text-gray-400 mt-0.5">
-              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Channels in <strong className="text-teal-300">TARGEThub (Folder 4)</strong> route to <strong className="text-teal-400">TARGEThub</strong>.
+              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward all past media & live posts to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Past messages are synced automatically in the background — no manual clicking needed!
             </p>
           </div>
         </div>
@@ -674,13 +675,30 @@ export default function BackupForwarderDetailPage() {
                           <div className="text-[11px] text-gray-400">Target: -1004401442087</div>
                         </div>
 
+                        {channel.sync_status === 'syncing' ? (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-medium">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Syncing ({channel.sync_processed || 0})</span>
+                          </div>
+                        ) : channel.sync_status === 'completed' ? (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Past Synced ({channel.sync_processed || 0})</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-medium">
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Auto-Sync Queued</span>
+                          </div>
+                        )}
+
                         <button
                           onClick={() => handleResync(channel.id, channel.title)}
-                          title="Re-forward past messages"
+                          title="Force re-sync past messages"
                           className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors"
                         >
                           <RotateCw className="w-3.5 h-3.5" />
-                          <span>Sync Past</span>
+                          <span>Re-Sync</span>
                         </button>
 
                         <button
@@ -704,13 +722,30 @@ export default function BackupForwarderDetailPage() {
                           <div className="text-[11px] text-gray-400">Target: -1004337870091</div>
                         </div>
 
+                        {channel.sync_status === 'syncing' ? (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-medium">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Syncing ({channel.sync_processed || 0})</span>
+                          </div>
+                        ) : channel.sync_status === 'completed' ? (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Past Synced ({channel.sync_processed || 0})</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-medium">
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Auto-Sync Queued</span>
+                          </div>
+                        )}
+
                         <button
                           onClick={() => handleResync(channel.id, channel.title)}
-                          title="Re-forward past messages"
+                          title="Force re-sync past messages"
                           className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors"
                         >
                           <RotateCw className="w-3.5 h-3.5" />
-                          <span>Sync Past</span>
+                          <span>Re-Sync</span>
                         </button>
 
                         <button

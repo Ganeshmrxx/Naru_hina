@@ -120,9 +120,21 @@ class BotManager:
         self.promote_enabled = {}
         self.background_tasks = {}
         self.forward_jobs = {}  # In-memory tracking for active bulk forward jobs
+        self.folder_sync_status = {}  # chat_id -> {"status": "syncing"|"completed"|"queued", "processed": int}
         self.dialogs_cache = []
         self.dialogs_cache_time = 0
+        self.db_a = None
+        self.db_b = None
         self._heartbeat_task = None
+        self._auto_folder_sync_task = None
+
+    def set_databases(self, db_a, db_b):
+        self.db_a = db_a
+        self.db_b = db_b
+
+    def start_auto_folder_sync(self):
+        if self._auto_folder_sync_task is None:
+            self._auto_folder_sync_task = asyncio.create_task(self._auto_folder_sync_runner())
 
     def start_heartbeat(self):
         if self._heartbeat_task is None:
@@ -365,9 +377,14 @@ class BotManager:
                 job["error"] = "No connected client available to execute forward job"
                 return
 
+        self.folder_sync_status[source_id] = {
+            "status": "syncing",
+            "processed": 0,
+            "target_id": target_id,
+            "job_id": job_id
+        }
+
         try:
-            from plugins_backup_forwarder.debug import copy_all_media
-            # Alternatively run direct history iteration
             async for msg in client.get_chat_history(source_id, offset_id=from_msg_id if from_msg_id > 0 else 0):
                 if job["status"] == "stopped":
                     break
@@ -379,9 +396,40 @@ class BotManager:
                     continue
 
                 if msg.video or msg.photo or msg.document:
+                    file_id = None
+                    if msg.video:
+                        file_id = getattr(msg.video, 'file_unique_id', None)
+                    elif msg.photo:
+                        file_id = getattr(msg.photo, 'file_unique_id', None)
+                    elif msg.document:
+                        file_id = getattr(msg.document, 'file_unique_id', None)
+
+                    # Check duplicate in Cluster B xData
+                    if file_id and self.db_b is not None:
+                        try:
+                            if self.db_b["xData"].find_one({"_id": file_id}):
+                                job["skipped"] += 1
+                                continue
+                        except Exception:
+                            pass
+
                     try:
-                        await msg.copy(chat_id=target_id)
+                        copied_msg = await msg.copy(chat_id=target_id)
                         job["processed"] += 1
+                        self.folder_sync_status[source_id]["processed"] = job["processed"]
+
+                        if file_id and self.db_b is not None:
+                            try:
+                                self.db_b["xData"].insert_one({
+                                    "_id": file_id,
+                                    "channel_id": target_id,
+                                    "source_id": source_id,
+                                    "message_id": getattr(copied_msg, "id", None),
+                                    "copied_at": datetime.now().isoformat()
+                                })
+                            except Exception:
+                                pass
+
                         await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
                     except Exception as copy_err:
                         job["failed"] += 1
@@ -393,9 +441,96 @@ class BotManager:
 
             if job["status"] != "stopped":
                 job["status"] = "completed"
+                self.folder_sync_status[source_id] = {
+                    "status": "completed",
+                    "processed": job["processed"],
+                    "completed_at": datetime.now().isoformat()
+                }
+                if self.db_a is not None:
+                    try:
+                        self.db_a.forward_progress.update_one(
+                            {"chat_id": source_id},
+                            {"$set": {
+                                "chat_id": source_id,
+                                "status": "completed",
+                                "total_copied": job["processed"],
+                                "target_id": target_id,
+                                "updated_at": datetime.now()
+                            }},
+                            upsert=True
+                        )
+                    except Exception:
+                        pass
         except Exception as e:
             job["status"] = "failed"
             job["error"] = str(e).encode("ascii", errors="ignore").decode("ascii")
+            self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
+
+    async def _auto_folder_sync_runner(self):
+        """Background worker: Automatically syncs past media from all channels in videoDB & TeraDB."""
+        logging.info("[AUTO SYNC] Folder auto-sync worker started.")
+        await asyncio.sleep(20)  # Wait for startup
+        while True:
+            try:
+                # Check if a bulk forward job is already currently running
+                any_running = any(j.get("status") == "running" for j in self.forward_jobs.values())
+                if not any_running:
+                    client = self.bots["backup_forwarder"].get("instance")
+                    if client and getattr(client, "is_connected", False):
+                        from pyrogram.raw.functions.messages import GetDialogFilters
+                        filters = await client.invoke(GetDialogFilters())
+                        folder_targets = {
+                            5: (-1004401442087, "videoDB"),
+                            6: (-1004337870091, "TeraDB")
+                        }
+
+                        channels_to_sync = []
+                        for f in filters:
+                            fid = getattr(f, "id", None)
+                            ftitle = str(getattr(f, "title", "")).lower()
+                            t_info = folder_targets.get(fid)
+                            if not t_info:
+                                if "video" in ftitle and "db" in ftitle:
+                                    t_info = (-1004401442087, "videoDB")
+                                elif "tera" in ftitle and "db" in ftitle:
+                                    t_info = (-1004337870091, "TeraDB")
+
+                            if t_info:
+                                tid, fname = t_info
+                                for p in getattr(f, "include_peers", []):
+                                    cid = getattr(p, "channel_id", getattr(p, "chat_id", None))
+                                    if cid:
+                                        clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
+                                        full_cid = int(f"-100{clean_cid}")
+
+                                        # Check if already completed in folder_sync_status or DB
+                                        sync_state = self.folder_sync_status.get(full_cid, {})
+                                        if sync_state.get("status") != "completed":
+                                            is_db_done = False
+                                            if self.db_a is not None:
+                                                try:
+                                                    doc = self.db_a.forward_progress.find_one({"chat_id": full_cid})
+                                                    if doc and doc.get("status") == "completed":
+                                                        is_db_done = True
+                                                        self.folder_sync_status[full_cid] = {
+                                                            "status": "completed",
+                                                            "processed": doc.get("total_copied", 0)
+                                                        }
+                                                except Exception:
+                                                    pass
+
+                                            if not is_db_done:
+                                                channels_to_sync.append((full_cid, tid, fname))
+
+                        if channels_to_sync:
+                            next_cid, next_tid, next_fname = channels_to_sync[0]
+                            logging.info(f"[AUTO SYNC] Auto-launching past media sync for {next_fname} channel {next_cid} -> {next_tid}")
+                            await self.start_bulk_forward_job(source_id=next_cid, target_id=next_tid)
+
+            except Exception as e:
+                logging.error(f"[AUTO SYNC] Runner error: {e}")
+
+            await asyncio.sleep(40)  # Re-check queue every 40s
 
     def stop_bulk_forward_job(self, job_id: str) -> dict:
         if job_id in self.forward_jobs:
@@ -509,6 +644,7 @@ class BotManager:
                         target_name = None
                         is_mapped = False
 
+                    sync_state = self.folder_sync_status.get(chat.id, {})
                     dialogs.append({
                         "id": chat.id,
                         "title": title,
@@ -524,7 +660,9 @@ class BotManager:
                         "target_id": target_id,
                         "target_name": target_name,
                         "is_live": True,
-                        "live_status": "active"
+                        "live_status": "active",
+                        "sync_status": sync_state.get("status", "idle"),
+                        "sync_processed": sync_state.get("processed", 0)
                     })
 
                 # Guarantee all folder channels are included even if not in dialogs (e.g. archived)
@@ -549,6 +687,7 @@ class BotManager:
                                 is_admin = is_creator or (admin_rights is not None)
                                 can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
                                 type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                                sync_state = self.folder_sync_status.get(chat.id, {})
                                 dialogs.append({
                                     "id": chat.id,
                                     "title": str(chat.title or f"Chat {chat.id}").strip() or f"Chat {chat.id}",
@@ -564,7 +703,9 @@ class BotManager:
                                     "target_id": tid,
                                     "target_name": tname,
                                     "is_live": True,
-                                    "live_status": "active"
+                                    "live_status": "active",
+                                    "sync_status": sync_state.get("status", "idle"),
+                                    "sync_processed": sync_state.get("processed", 0)
                                 })
                                 seen_cids.add(chat.id)
                         except Exception:
@@ -599,6 +740,17 @@ class BotManager:
                     d["is_mapped"] = True
                     d["target_id"] = m.get("target")
                     d["target_name"] = m.get("target_name")
+
+            if self.db_a is not None:
+                try:
+                    for d in dialogs:
+                        if d.get("sync_status") != "syncing":
+                            p_doc = self.db_a.forward_progress.find_one({"chat_id": d["id"]})
+                            if p_doc and p_doc.get("status") == "completed":
+                                d["sync_status"] = "completed"
+                                d["sync_processed"] = p_doc.get("total_copied", 0)
+                except Exception:
+                    pass
 
             for src_id, m in mapped_map.items():
                 if src_id not in existing_ids:

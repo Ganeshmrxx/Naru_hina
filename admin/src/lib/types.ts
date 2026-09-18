@@ -89,6 +89,8 @@ export interface TelegramDialog {
   target_name: string | null;
   is_live?: boolean;
   live_status?: 'active' | 'dead' | string;
+  sync_status?: 'syncing' | 'completed' | 'idle' | string | null;
+  sync_processed?: number;
 }
 
 export interface TelegramFolderChannel {

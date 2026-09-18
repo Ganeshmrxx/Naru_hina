@@ -136,8 +136,10 @@ async def startup_event():
         except Exception as se:
             print(f"Error loading bot_sessions from MongoDB: {se}")
 
-    # Start heartbeat and default bots
+    # Set databases and start background tasks
+    bot_manager.set_databases(db_a, db_b)
     bot_manager.start_heartbeat()
+    bot_manager.start_auto_folder_sync()
     await bot_manager.start_all()
 
 @app.on_event("shutdown")
