@@ -11,7 +11,7 @@ class BackupForwarderBot(Client):
             plugins={"root": "plugins_backup_forwarder"},
             workers=20,
             session_string=Config.SESSION2,
-            sleep_threshold=10
+            sleep_threshold=60
         )
         self.LOGGER = LOGGER
 

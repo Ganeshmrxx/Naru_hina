@@ -18,6 +18,7 @@ from TeraBoxModifierBot import TeraBoxModifierBot
 from BackupForwarderBot import BackupForwarderBot
 from GeneralDataModifierBot import GeneralDataModifierBot
 import re
+from pyrogram.errors import FloodWait, RPCError
 from pyrogram.raw.functions.messages import GetDialogFilters, UpdateDialogFilter
 from pyrogram.raw.types import DialogFilter
 
@@ -632,45 +633,79 @@ class BotManager:
 
                         caption = build_caption(None, source_id, source_title)
                         copied_group = None
-                        try:
-                            if is_public and self.worker_bots:
-                                worker_bot = self._get_next_worker_bot()
-                                try:
-                                    copied_group = await worker_bot.copy_media_group(
-                                        chat_id=target_id,
-                                        from_chat_id=source_username,
-                                        message_id=msg.id,
-                                        captions=caption
-                                    )
-                                except Exception as wb_err:
-                                    logging.warning(f"[WORKER ERR] Album copy failed ({wb_err}), fallback to Userbot...")
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                if is_public and self.worker_bots:
+                                    worker_bot = self._get_next_worker_bot()
+                                    try:
+                                        copied_group = await worker_bot.copy_media_group(
+                                            chat_id=target_id,
+                                            from_chat_id=source_username,
+                                            message_id=msg.id,
+                                            captions=caption
+                                        )
+                                    except FloodWait as fw:
+                                        wait_time = getattr(fw, 'value', 10) + 2
+                                        logging.warning(f"[FLOOD WAIT] Worker bot hit FloodWait: {wait_time}s on album. Retrying on userbot...")
+                                        await asyncio.sleep(wait_time)
+                                        copied_group = await client.copy_media_group(
+                                            chat_id=target_id,
+                                            from_chat_id=source_id,
+                                            message_id=msg.id,
+                                            captions=caption
+                                        )
+                                    except Exception as wb_err:
+                                        logging.warning(f"[WORKER ERR] Album copy failed ({wb_err}), fallback to Userbot...")
+                                        copied_group = await client.copy_media_group(
+                                            chat_id=target_id,
+                                            from_chat_id=source_id,
+                                            message_id=msg.id,
+                                            captions=caption
+                                        )
+                                else:
                                     copied_group = await client.copy_media_group(
                                         chat_id=target_id,
                                         from_chat_id=source_id,
                                         message_id=msg.id,
                                         captions=caption
                                     )
-                            else:
-                                copied_group = await client.copy_media_group(
-                                    chat_id=target_id,
-                                    from_chat_id=source_id,
-                                    message_id=msg.id,
-                                    captions=caption
-                                )
 
-                            items_count = len(copied_group) if isinstance(copied_group, list) else 1
-                            job["processed"] += items_count
-                            update_progress(msg.id)
+                                items_count = len(copied_group) if isinstance(copied_group, list) else 1
+                                job["processed"] += items_count
+                                update_progress(msg.id)
 
-                            # Checkpoint update to MongoDB every 10 messages
-                            if job["processed"] % 10 == 0:
-                                save_mongo_checkpoint(msg.id)
+                                # Checkpoint update to MongoDB every 10 messages
+                                if job["processed"] % 10 == 0:
+                                    save_mongo_checkpoint(msg.id)
 
-                            await asyncio.sleep(2.0)
-                        except Exception as album_err:
-                            job["failed"] += 1
-                            update_progress(msg.id)
-                            logging.warning(f"[ALBUM ERR] Failed to copy group {group_id}: {album_err}")
+                                # Periodic cooldown every 25 messages to avoid Telegram flood limits
+                                if job["processed"] % 25 == 0:
+                                    logging.info(f"[BATCH COOLDOWN] Processed {job['processed']} items. Cooling down for 5s to avoid FloodWait...")
+                                    await asyncio.sleep(5.0)
+                                else:
+                                    await asyncio.sleep(2.0)
+                                break
+                            except FloodWait as fw:
+                                wait_time = getattr(fw, 'value', 15) + 2
+                                logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait for album (attempt {attempt+1}/{max_retries}). Sleeping...")
+                                await asyncio.sleep(wait_time)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                            except Exception as album_err:
+                                err_str = str(album_err).encode("ascii", errors="ignore").decode("ascii")
+                                if "FloodWait" in err_str:
+                                    logging.warning(f"[FLOOD WAIT] Generic FloodWait in album: {err_str}. Sleeping 20s...")
+                                    await asyncio.sleep(20)
+                                    if attempt == max_retries - 1:
+                                        job["failed"] += 1
+                                        update_progress(msg.id)
+                                else:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                                    logging.warning(f"[ALBUM ERR] Failed to copy group {group_id}: {album_err}")
+                                    break
                         continue
 
                     # ==============================================================
@@ -691,38 +726,71 @@ class BotManager:
 
                     if is_text:
                         text_to_send = build_text(msg.text, source_id, source_title)
-                        try:
-                            if is_public and self.worker_bots:
-                                worker_bot = self._get_next_worker_bot()
-                                try:
-                                    copied_msg = await worker_bot.send_message(
-                                        chat_id=target_id,
-                                        text=text_to_send,
-                                        disable_web_page_preview=False
-                                    )
-                                except Exception:
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                if is_public and self.worker_bots:
+                                    worker_bot = self._get_next_worker_bot()
+                                    try:
+                                        copied_msg = await worker_bot.send_message(
+                                            chat_id=target_id,
+                                            text=text_to_send,
+                                            disable_web_page_preview=False
+                                        )
+                                    except FloodWait as fw:
+                                        wait_time = getattr(fw, 'value', 10) + 2
+                                        logging.warning(f"[FLOOD WAIT] Worker text hit {wait_time}s wait. Retrying on userbot...")
+                                        await asyncio.sleep(wait_time)
+                                        copied_msg = await client.send_message(
+                                            chat_id=target_id,
+                                            text=text_to_send,
+                                            disable_web_page_preview=False
+                                        )
+                                    except Exception:
+                                        copied_msg = await client.send_message(
+                                            chat_id=target_id,
+                                            text=text_to_send,
+                                            disable_web_page_preview=False
+                                        )
+                                else:
                                     copied_msg = await client.send_message(
                                         chat_id=target_id,
                                         text=text_to_send,
                                         disable_web_page_preview=False
                                     )
-                            else:
-                                copied_msg = await client.send_message(
-                                    chat_id=target_id,
-                                    text=text_to_send,
-                                    disable_web_page_preview=False
-                                )
-                            job["processed"] += 1
-                            update_progress(msg.id)
+                                job["processed"] += 1
+                                update_progress(msg.id)
 
-                            # Checkpoint update to MongoDB every 10 messages
-                            if job["processed"] % 10 == 0:
-                                save_mongo_checkpoint(msg.id)
+                                # Checkpoint update to MongoDB every 10 messages
+                                if job["processed"] % 10 == 0:
+                                    save_mongo_checkpoint(msg.id)
 
-                            await asyncio.sleep(1.5)
-                        except Exception as text_err:
-                            job["failed"] += 1
-                            update_progress(msg.id)
+                                if job["processed"] % 25 == 0:
+                                    logging.info(f"[BATCH COOLDOWN] Processed {job['processed']} items. Cooling down for 5s to avoid FloodWait...")
+                                    await asyncio.sleep(5.0)
+                                else:
+                                    await asyncio.sleep(1.5)
+                                break
+                            except FloodWait as fw:
+                                wait_time = getattr(fw, 'value', 15) + 2
+                                logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait for text (attempt {attempt+1}/{max_retries}). Sleeping...")
+                                await asyncio.sleep(wait_time)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                            except Exception as text_err:
+                                err_str = str(text_err).encode("ascii", errors="ignore").decode("ascii")
+                                if "FloodWait" in err_str:
+                                    logging.warning(f"[FLOOD WAIT] Generic FloodWait in text: {err_str}. Sleeping 20s...")
+                                    await asyncio.sleep(20)
+                                    if attempt == max_retries - 1:
+                                        job["failed"] += 1
+                                        update_progress(msg.id)
+                                else:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                                    logging.warning(f"[TEXT ERR] Failed to send text: {text_err}")
+                                    break
                         continue
 
                     file_id = None
@@ -744,59 +812,91 @@ class BotManager:
                     # Build caption with channel ID and channel name
                     caption = build_caption(msg.caption, source_id, source_title)
 
-                    try:
-                        copied_msg = None
-                        if is_public and self.worker_bots:
-                            worker_bot = self._get_next_worker_bot()
-                            try:
-                                copied_msg = await worker_bot.copy_message(
-                                    chat_id=target_id,
-                                    from_chat_id=source_username,
-                                    message_id=msg.id,
-                                    caption=caption
-                                )
-                            except Exception as wb_err:
-                                logging.warning(f"[WORKER ERR] Worker copy failed ({wb_err}), fallback to Userbot...")
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            copied_msg = None
+                            if is_public and self.worker_bots:
+                                worker_bot = self._get_next_worker_bot()
+                                try:
+                                    copied_msg = await worker_bot.copy_message(
+                                        chat_id=target_id,
+                                        from_chat_id=source_username,
+                                        message_id=msg.id,
+                                        caption=caption
+                                    )
+                                except FloodWait as fw:
+                                    wait_time = getattr(fw, 'value', 10) + 2
+                                    logging.warning(f"[FLOOD WAIT] Worker hit FloodWait {wait_time}s. Retrying on userbot...")
+                                    await asyncio.sleep(wait_time)
+                                    copied_msg = await client.copy_message(
+                                        chat_id=target_id,
+                                        from_chat_id=source_id,
+                                        message_id=msg.id,
+                                        caption=caption
+                                    )
+                                except Exception as wb_err:
+                                    logging.warning(f"[WORKER ERR] Worker copy failed ({wb_err}), fallback to Userbot...")
+                                    copied_msg = await client.copy_message(
+                                        chat_id=target_id,
+                                        from_chat_id=source_id,
+                                        message_id=msg.id,
+                                        caption=caption
+                                    )
+                            else:
                                 copied_msg = await client.copy_message(
                                     chat_id=target_id,
                                     from_chat_id=source_id,
                                     message_id=msg.id,
                                     caption=caption
                                 )
-                        else:
-                            copied_msg = await client.copy_message(
-                                chat_id=target_id,
-                                from_chat_id=source_id,
-                                message_id=msg.id,
-                                caption=caption
-                            )
 
-                        job["processed"] += 1
-                        update_progress(msg.id)
+                            job["processed"] += 1
+                            update_progress(msg.id)
 
-                        if file_id and self.db_b is not None:
-                            try:
-                                self.db_b["xData"].insert_one({
-                                    "_id": file_id,
-                                    "channel_id": target_id,
-                                    "source_id": source_id,
-                                    "message_id": getattr(copied_msg, "id", None),
-                                    "copied_at": datetime.now().isoformat()
-                                })
-                            except Exception:
-                                pass
+                            if file_id and self.db_b is not None:
+                                try:
+                                    self.db_b["xData"].insert_one({
+                                        "_id": file_id,
+                                        "channel_id": target_id,
+                                        "source_id": source_id,
+                                        "message_id": getattr(copied_msg, "id", None),
+                                        "copied_at": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
 
-                        # Checkpoint update to MongoDB every 10 messages
-                        if job["processed"] % 10 == 0:
-                            save_mongo_checkpoint(msg.id)
+                            # Checkpoint update to MongoDB every 10 messages
+                            if job["processed"] % 10 == 0:
+                                save_mongo_checkpoint(msg.id)
 
-                        await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
-                    except Exception as copy_err:
-                        job["failed"] += 1
-                        update_progress(msg.id)
-                        err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
-                        if "FloodWait" in err_str:
-                            await asyncio.sleep(15)
+                            # Batch cooldown every 25 messages to avoid Telegram flood limits
+                            if job["processed"] % 25 == 0:
+                                logging.info(f"[BATCH COOLDOWN] Processed {job['processed']} items. Cooling down for 5s to avoid FloodWait...")
+                                await asyncio.sleep(5.0)
+                            else:
+                                await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
+                            break
+                        except FloodWait as fw:
+                            wait_time = getattr(fw, 'value', 15) + 2
+                            logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait (attempt {attempt+1}/{max_retries}). Sleeping...")
+                            await asyncio.sleep(wait_time)
+                            if attempt == max_retries - 1:
+                                job["failed"] += 1
+                                update_progress(msg.id)
+                        except Exception as copy_err:
+                            err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
+                            if "FloodWait" in err_str:
+                                logging.warning(f"[FLOOD WAIT] Generic FloodWait detected: {err_str}. Sleeping 20s...")
+                                await asyncio.sleep(20)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                            else:
+                                job["failed"] += 1
+                                update_progress(msg.id)
+                                logging.warning(f"[COPY ERR] Failed to copy msg {msg.id}: {copy_err}")
+                                break
 
                 if job["status"] != "stopped":
                     job["status"] = "completed"

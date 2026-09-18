@@ -11,7 +11,7 @@ class MovieForwarderBot(Client):
             plugins={"root": "plugins_movie_forwarder"},
             workers=20,
             session_string=Config.SESSION1,
-            sleep_threshold=10
+            sleep_threshold=60
         )
         self.LOGGER = LOGGER
 

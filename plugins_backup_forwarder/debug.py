@@ -370,6 +370,15 @@ async def auto_forward(client, message):
             )
             print(f"✔ Copied complete album (group {group_id}) to {target}")
             return
+        except FloodWait as fw:
+            wait = getattr(fw, "value", 15) + 2
+            print(f"⚠ FloodWait on live album: Sleeping {wait}s...")
+            await asyncio.sleep(wait)
+            try:
+                await client.copy_media_group(chat_id=target, from_chat_id=incoming_id, message_id=message.id, captions=caption)
+            except Exception as e2:
+                print(f"❌ Error retrying album after FloodWait: {e2}")
+            return
         except Exception as ge:
             print(f"❌ Error copying live media group {group_id}: {ge}")
             return
@@ -425,10 +434,26 @@ async def auto_forward(client, message):
             "media_type": media_type,
             "duration": duration,
             "file_size": size
-
         })
         print("✅ Metadata saved in DB", copied_msg.id)
 
+    except FloodWait as fw:
+        wait = getattr(fw, "value", 15) + 2
+        print(f"⚠ Live Auto-Forward FloodWait: Sleeping {wait} sec...")
+        await asyncio.sleep(wait)
+        try:
+            copied_msg = await message.copy(chat_id=target, caption=caption)
+            db["xData"].insert_one({
+                "_id": video_id,
+                "channel_id": target,
+                "message_id": copied_msg.id,
+                "media_type": media_type,
+                "duration": duration,
+                "file_size": size
+            })
+            print("✅ Metadata saved in DB after FloodWait retry", getattr(copied_msg, "id", None))
+        except Exception as retry_e:
+            print(f"❌ Error retrying after FloodWait: {retry_e}")
     except Exception as e:
         print(f"❌ Error copying message or saving data: {e}")
 
