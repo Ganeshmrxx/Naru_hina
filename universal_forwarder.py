@@ -44,7 +44,7 @@ FOLDER_CONFIG = {
     }
 }
 
-STATUS_UPDATE_EVERY = 100  # Commit to MongoDB every 100 transfers
+STATUS_UPDATE_EVERY = 10   # Commit to MongoDB every 10 transfers
 BOT_BATCH_SIZE = 10       # Switch active worker bot every 10 messages
 TEMP_DOWNLOAD_DIR = r"e:\Ganesh\ANIGRAVITY\allforward\temp_downloads"
 
@@ -58,6 +58,7 @@ CURRENT_PROGRESS = {
     "target_name": "",
     "last_msg_id": 0,
     "total_copied": 0,
+    "grouped_copied": 0,
     "status": "idle",
     "channel_type": "unknown"
 }
@@ -70,12 +71,44 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 progress_col = db["forward_progress"]
 queue_col = db["forward_queue"]
+grouped_col = db["grouped_messages"]
 
 def get_channel_progress(chat_id: int) -> Dict[str, Any]:
     doc = progress_col.find_one({"chat_id": chat_id})
     if not doc:
         doc = progress_col.find_one({"source_id": chat_id})
     return doc or {}
+
+def record_grouped_message(
+    chat_id: int,
+    channel_title: str,
+    group_id: Any,
+    message_ids: List[int],
+    target_id: int
+):
+    """Records a grouped message in MongoDB collection 'grouped_messages' with group_id and channel_id."""
+    try:
+        grouped_col.update_one(
+            {"channel_id": chat_id, "group_id": str(group_id)},
+            {"$set": {
+                "channel_id": chat_id,
+                "channel_title": channel_title,
+                "group_id": str(group_id),
+                "target_id": target_id,
+                "items_count": len(message_ids),
+                "message_ids": message_ids,
+                "copied_at": datetime.now(timezone.utc)
+            }},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"   [DB ERROR] Failed to record grouped message {group_id}: {e}", flush=True)
+
+def get_grouped_messages_count(chat_id: int) -> int:
+    try:
+        return grouped_col.count_documents({"channel_id": chat_id})
+    except Exception:
+        return 0
 
 def save_channel_progress(
     chat_id: int,
@@ -86,27 +119,12 @@ def save_channel_progress(
     last_msg_id: int,
     total_copied: int,
     status: str = "in_progress",
-    channel_type: str = "unknown"
+    channel_type: str = "unknown",
+    grouped_copied: Optional[int] = None
 ):
-    progress_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {
-            "chat_id": chat_id,
-            "source_id": chat_id,
-            "source_name": source_name,
-            "folder_name": folder_name,
-            "target_id": target_id,
-            "target_name": target_name,
-            "last_msg_id": last_msg_id,
-            "total_copied": total_copied,
-            "status": status,
-            "channel_type": channel_type,
-            "updated_at": datetime.now(timezone.utc)
-        }},
-        upsert=True
-    )
-    CURRENT_PROGRESS.update({
+    update_data = {
         "chat_id": chat_id,
+        "source_id": chat_id,
         "source_name": source_name,
         "folder_name": folder_name,
         "target_id": target_id,
@@ -114,8 +132,18 @@ def save_channel_progress(
         "last_msg_id": last_msg_id,
         "total_copied": total_copied,
         "status": status,
-        "channel_type": channel_type
-    })
+        "channel_type": channel_type,
+        "updated_at": datetime.now(timezone.utc)
+    }
+    if grouped_copied is not None:
+        update_data["grouped_copied"] = grouped_copied
+
+    progress_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": update_data},
+        upsert=True
+    )
+    CURRENT_PROGRESS.update(update_data)
 
 def update_queue_status(queue_items: List[Dict[str, Any]], active_chat_id: Optional[int]):
     """Syncs the ordered channel queue to MongoDB collection forward_queue."""
@@ -661,16 +689,20 @@ class UniversalForwarder:
         progress = get_channel_progress(chat_id)
         last_msg_id = progress.get("last_msg_id", 0)
         total_copied = progress.get("total_copied", 0)
+        total_grouped_copied = progress.get("grouped_copied", 0)
+        if total_grouped_copied == 0:
+            total_grouped_copied = get_grouped_messages_count(chat_id)
 
         if last_msg_id >= latest_msg_id:
-            print(f"   [UP TO DATE] All messages up to {latest_msg_id} already transferred. (Copied: {total_copied})", flush=True)
+            print(f"   [UP TO DATE] All messages up to {latest_msg_id} already transferred. (Copied: {total_copied}, Grouped: {total_grouped_copied})", flush=True)
             save_channel_progress(
                 chat_id, chat_title, folder_name, target_id, target_name,
-                latest_msg_id, total_copied, "completed", channel_type
+                latest_msg_id, total_copied, "completed", channel_type,
+                grouped_copied=total_grouped_copied
             )
             return
 
-        print(f"   Resuming from Message ID: {last_msg_id + 1} to {latest_msg_id} (Already copied: {total_copied})", flush=True)
+        print(f"   Resuming from Message ID: {last_msg_id + 1} to {latest_msg_id} (Already copied: {total_copied}, Grouped: {total_grouped_copied})", flush=True)
 
         # 3. Batch Iterate From Oldest to Newest (1 channel at a time)
         batch_size = 50
@@ -684,7 +716,8 @@ class UniversalForwarder:
                 print("\n[STOPPING] Shutdown requested. Saving state to MongoDB...", flush=True)
                 save_channel_progress(
                     chat_id, chat_title, folder_name, target_id, target_name,
-                    current_id - 1, total_copied, "paused", channel_type
+                    current_id - 1, total_copied, "paused", channel_type,
+                    grouped_copied=total_grouped_copied
                 )
                 return
 
@@ -744,7 +777,8 @@ class UniversalForwarder:
                             await self.remove_channel_from_folder(folder_id, chat_id)
                             save_channel_progress(
                                 chat_id, chat_title, folder_name, target_id, target_name,
-                                current_id - 1, total_copied, "removed_restricted", "restricted"
+                                current_id - 1, total_copied, "removed_restricted", "restricted",
+                                grouped_copied=total_grouped_copied
                             )
                             queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
                             return
@@ -754,15 +788,26 @@ class UniversalForwarder:
                     if success:
                         items_count = len(group_msgs)
                         total_copied += items_count
+                        total_grouped_copied += 1
                         messages_since_checkpoint += items_count
-                        print(f"   [OK ALBUM] Group {group_id} ({items_count} items) transferred | Channel Total: {total_copied}", flush=True)
+
+                        # Record in separate MongoDB collection 'grouped_messages'
+                        record_grouped_message(
+                            chat_id=chat_id,
+                            channel_title=chat_title,
+                            group_id=group_id,
+                            message_ids=[gm.id for gm in group_msgs],
+                            target_id=target_id
+                        )
+                        print(f"   [OK ALBUM] Group {group_id} ({items_count} items) saved to MongoDB | Channel Total: {total_copied} (Grouped: {total_grouped_copied})", flush=True)
 
                         if messages_since_checkpoint >= STATUS_UPDATE_EVERY:
                             save_channel_progress(
                                 chat_id, chat_title, folder_name, target_id, target_name,
-                                msg.id, total_copied, "in_progress", channel_type
+                                msg.id, total_copied, "in_progress", channel_type,
+                                grouped_copied=total_grouped_copied
                             )
-                            print(f"   [CHECKPOINT] MongoDB updated! (Msg ID: {msg.id}, Copied: {total_copied})", flush=True)
+                            print(f"   [CHECKPOINT] MongoDB updated! (Msg ID: {msg.id}, Copied: {total_copied}, Grouped: {total_grouped_copied})", flush=True)
                             messages_since_checkpoint = 0
 
                     await asyncio.sleep(random.uniform(1.5, 2.5))
@@ -810,7 +855,8 @@ class UniversalForwarder:
                         await self.remove_channel_from_folder(folder_id, chat_id)
                         save_channel_progress(
                             chat_id, chat_title, folder_name, target_id, target_name,
-                            current_id - 1, total_copied, "removed_restricted", "restricted"
+                            current_id - 1, total_copied, "removed_restricted", "restricted",
+                            grouped_copied=total_grouped_copied
                         )
                         queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
                         return
@@ -821,15 +867,16 @@ class UniversalForwarder:
                     total_copied += 1
                     messages_since_checkpoint += 1
                     m_label = "Video" if is_video else "Text"
-                    print(f"   [OK {m_label}] Msg {msg.id}/{latest_msg_id} transferred | Channel Total: {total_copied}", flush=True)
+                    print(f"   [OK {m_label}] Msg {msg.id}/{latest_msg_id} transferred | Channel Total: {total_copied} (Grouped: {total_grouped_copied})", flush=True)
 
-                    # Checkpoint to MongoDB every 100 transfers
+                    # Checkpoint to MongoDB every 10 transfers
                     if messages_since_checkpoint >= STATUS_UPDATE_EVERY:
                         save_channel_progress(
                             chat_id, chat_title, folder_name, target_id, target_name,
-                            msg.id, total_copied, "in_progress", channel_type
+                            msg.id, total_copied, "in_progress", channel_type,
+                            grouped_copied=total_grouped_copied
                         )
-                        print(f"   [CHECKPOINT] MongoDB updated! (Msg ID: {msg.id}, Copied: {total_copied})", flush=True)
+                        print(f"   [CHECKPOINT] MongoDB updated! (Msg ID: {msg.id}, Copied: {total_copied}, Grouped: {total_grouped_copied})", flush=True)
                         messages_since_checkpoint = 0
 
                 # Gentle delay to respect Telegram limits
@@ -838,16 +885,18 @@ class UniversalForwarder:
             # Update batch progress in MongoDB
             save_channel_progress(
                 chat_id, chat_title, folder_name, target_id, target_name,
-                end_id, total_copied, "in_progress", channel_type
+                end_id, total_copied, "in_progress", channel_type,
+                grouped_copied=total_grouped_copied
             )
             current_id = end_id + 1
 
         # Channel Completed
         save_channel_progress(
             chat_id, chat_title, folder_name, target_id, target_name,
-            latest_msg_id, total_copied, "completed", channel_type
+            latest_msg_id, total_copied, "completed", channel_type,
+            grouped_copied=total_grouped_copied
         )
-        print(f"\n[DONE] Channel '{chat_title}' finished completely! (Total copied: {total_copied})", flush=True)
+        print(f"\n[DONE] Channel '{chat_title}' finished completely! (Total copied: {total_copied}, Grouped: {total_grouped_copied})", flush=True)
 
     async def run(self):
         await self.initialize_userbot()
@@ -914,7 +963,8 @@ class UniversalForwarder:
                 CURRENT_PROGRESS["last_msg_id"],
                 CURRENT_PROGRESS["total_copied"],
                 CURRENT_PROGRESS["status"],
-                CURRENT_PROGRESS["channel_type"]
+                CURRENT_PROGRESS["channel_type"],
+                grouped_copied=CURRENT_PROGRESS.get("grouped_copied", 0)
             )
             print(f"Flushed final state to MongoDB: {CURRENT_PROGRESS}", flush=True)
 
