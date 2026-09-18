@@ -469,66 +469,146 @@ export default function BackupForwarderDetailPage() {
               const isUserbot = j.worker_type === 'userbot' || (!j.is_public && j.is_public !== undefined);
               const isJobRunning = j.status === 'running';
 
+              const total = (j.total as number) || 0;
+              const copied = (j.processed as number) || 0;
+              const skipped = (j.skipped as number) || 0;
+              const failed = (j.failed as number) || 0;
+              const remaining = typeof j.remaining === 'number'
+                ? (j.remaining as number)
+                : total > 0
+                ? Math.max(0, total - (copied + skipped + failed))
+                : 0;
+              const pct = typeof j.progress_pct === 'number' && j.progress_pct > 0
+                ? j.progress_pct
+                : total > 0
+                ? Math.min(100, Math.round(((copied + skipped + failed) / total) * 100))
+                : 0;
+
               return (
                 <div
                   key={j.job_id as string}
-                  className="bg-[#0d1117] border border-[#1f2937] rounded-lg p-3 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
+                  className="bg-[#0d1117] border border-[#1f2937] rounded-xl p-3.5 space-y-3"
                 >
-                  <div className="flex flex-wrap items-center gap-2 font-mono">
-                    <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider bg-gray-800 text-gray-300">
-                      Job {j.job_id as string}
-                    </span>
-
-                    {/* Worker Type Badge */}
-                    {isWorkerBots ? (
-                      <span className="px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
-                        🤖 12 Worker Bots (Public)
+                  {/* Header Row: Job ID, Worker Type, Status, Channel Name & Target */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2 py-0.5 rounded text-[10px] uppercase font-mono font-bold tracking-wider bg-gray-800 text-gray-300">
+                        Job {j.job_id as string}
                       </span>
-                    ) : isUserbot ? (
-                      <span className="px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">
-                        👤 Userbot (Private)
-                      </span>
-                    ) : (
-                      <span className="px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-gray-800 text-gray-400 border border-gray-700 flex items-center gap-1">
-                        Detecting lane...
-                      </span>
-                    )}
 
-                    {/* Status Badge */}
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        isJobRunning
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                      }`}
-                    >
-                      {isJobRunning ? 'RUNNING' : 'QUEUED'}
-                    </span>
-
-                    {/* Channel title / IDs */}
-                    <div className="flex items-center gap-1.5 text-white">
-                      {j.source_name ? (
-                        <span className="font-sans font-semibold text-yellow-300">
-                          &quot;{String(j.source_name)}&quot;
+                      {/* Worker Type Badge */}
+                      {isWorkerBots ? (
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                          🤖 12 Worker Bots (Public)
                         </span>
-                      ) : null}
-                      <span className="font-bold text-gray-300">({j.source_id as number})</span>
-                      <span className="text-gray-500">➔</span>
-                      <span className="text-emerald-400 font-bold">{j.target_id as number}</span>
+                      ) : isUserbot ? (
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">
+                          👤 Userbot (Private)
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-gray-800 text-gray-400 border border-gray-700 flex items-center gap-1">
+                          Detecting lane...
+                        </span>
+                      )}
+
+                      {/* Status Badge */}
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          isJobRunning
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        }`}
+                      >
+                        {isJobRunning ? 'RUNNING' : 'QUEUED'}
+                      </span>
+
+                      {/* Channel title / IDs */}
+                      <div className="flex items-center gap-1.5 text-xs text-white">
+                        {j.source_name ? (
+                          <span className="font-semibold text-yellow-300">
+                            &quot;{String(j.source_name)}&quot;
+                          </span>
+                        ) : null}
+                        <span className="text-gray-400 font-mono">({j.source_id as number})</span>
+                        <span className="text-gray-500">➔</span>
+                        <span className="text-emerald-400 font-mono font-bold">{j.target_id as number}</span>
+                      </div>
                     </div>
 
-                    <span className="ml-1 text-gray-400">
-                      Copied: <strong className="text-green-400">{j.processed as number}</strong> | Skipped:{' '}
-                      {j.skipped as number}
-                    </span>
+                    <button
+                      onClick={() => handleStopJob(j.job_id as string)}
+                      className="px-3 py-1 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 text-xs font-medium transition-colors self-start sm:self-auto"
+                    >
+                      Stop Job
+                    </button>
                   </div>
 
-                  <button
-                    onClick={() => handleStopJob(j.job_id as string)}
-                    className="px-2.5 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 text-[11px] font-medium transition-colors self-start md:self-auto"
-                  >
-                    Stop Job
-                  </button>
+                  {/* 5-Column Stats Cards: Total | Forwarded/Copied | Skipped | Bacha Hai (Remaining) | Completed % */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+                    <div className="bg-[#161b22] border border-[#21262d] rounded-lg p-2.5">
+                      <div className="text-[11px] text-gray-400 flex items-center gap-1 font-medium">
+                        <span>📊 Total Messages</span>
+                      </div>
+                      <div className="text-base font-bold font-mono text-white mt-0.5">
+                        {total > 0 ? total.toLocaleString() : 'Estimating...'}
+                      </div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">In source channel</div>
+                    </div>
+
+                    <div className="bg-emerald-950/20 border border-emerald-500/30 rounded-lg p-2.5">
+                      <div className="text-[11px] text-emerald-300 flex items-center gap-1 font-medium">
+                        <span>✅ Forwarded (Copied)</span>
+                      </div>
+                      <div className="text-base font-bold font-mono text-emerald-400 mt-0.5">
+                        {copied.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-emerald-500/80 mt-0.5">Delivered to target</div>
+                    </div>
+
+                    <div className="bg-[#161b22] border border-[#21262d] rounded-lg p-2.5">
+                      <div className="text-[11px] text-gray-400 flex items-center gap-1 font-medium">
+                        <span>⏭️ Skipped</span>
+                      </div>
+                      <div className="text-base font-bold font-mono text-gray-300 mt-0.5">
+                        {skipped.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">Photo / dup / no-media</div>
+                    </div>
+
+                    <div className="bg-amber-950/20 border border-amber-500/30 rounded-lg p-2.5">
+                      <div className="text-[11px] text-amber-300 flex items-center gap-1 font-medium">
+                        <span>⏳ Bacha Hai (Remaining)</span>
+                      </div>
+                      <div className="text-base font-bold font-mono text-amber-400 mt-0.5">
+                        {total > 0 ? remaining.toLocaleString() : 'Calculating...'}
+                      </div>
+                      <div className="text-[10px] text-amber-500/80 mt-0.5">Messages pending</div>
+                    </div>
+
+                    <div className="bg-blue-950/20 border border-blue-500/30 rounded-lg p-2.5">
+                      <div className="text-[11px] text-blue-300 flex items-center gap-1 font-medium">
+                        <span>📈 Progress</span>
+                      </div>
+                      <div className="text-base font-bold font-mono text-blue-400 mt-0.5">
+                        {total > 0 ? `${pct}%` : 'In Progress'}
+                      </div>
+                      <div className="text-[10px] text-blue-500/80 mt-0.5">Scan completion</div>
+                    </div>
+                  </div>
+
+                  {/* Animated Progress Bar */}
+                  <div className="space-y-1 pt-0.5">
+                    <div className="flex items-center justify-between text-[11px] text-gray-400 font-mono">
+                      <span>Current Msg ID: <strong className="text-gray-200">#{j.current_msg_id as number || 0}</strong></span>
+                      <span>{pct}% Scanned {total > 0 ? `(${((copied + skipped)).toLocaleString()} / ${total.toLocaleString()})` : ''}</span>
+                    </div>
+                    <div className="w-full bg-[#1f2937] h-2 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-blue-500 via-indigo-400 to-emerald-400 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.max(2, Math.min(100, pct))}%` }}
+                      />
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -725,9 +805,16 @@ export default function BackupForwarderDetailPage() {
                         </div>
 
                         {channel.sync_status === 'syncing' ? (
-                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-medium">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Syncing ({channel.sync_processed || 0})</span>
+                          <div className="flex flex-col gap-0.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs">
+                            <div className="flex items-center gap-1.5 font-medium">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                              <span>Syncing ({channel.sync_processed || 0} Copied)</span>
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-mono">
+                              {channel.sync_total ? `Total: ${channel.sync_total.toLocaleString()} | ` : ''}
+                              {channel.sync_remaining ? `Bacha: ${channel.sync_remaining.toLocaleString()}` : ''}
+                              {channel.sync_pct ? ` (${channel.sync_pct}%)` : ''}
+                            </div>
                           </div>
                         ) : channel.sync_status === 'completed' ? (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
@@ -772,9 +859,16 @@ export default function BackupForwarderDetailPage() {
                         </div>
 
                         {channel.sync_status === 'syncing' ? (
-                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-medium">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Syncing ({channel.sync_processed || 0})</span>
+                          <div className="flex flex-col gap-0.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs">
+                            <div className="flex items-center gap-1.5 font-medium">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                              <span>Syncing ({channel.sync_processed || 0} Copied)</span>
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-mono">
+                              {channel.sync_total ? `Total: ${channel.sync_total.toLocaleString()} | ` : ''}
+                              {channel.sync_remaining ? `Bacha: ${channel.sync_remaining.toLocaleString()}` : ''}
+                              {channel.sync_pct ? ` (${channel.sync_pct}%)` : ''}
+                            </div>
                           </div>
                         ) : channel.sync_status === 'completed' ? (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">

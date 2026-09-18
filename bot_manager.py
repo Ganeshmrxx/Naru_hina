@@ -441,6 +441,8 @@ class BotManager:
             "total": 0,
             "skipped": 0,
             "failed": 0,
+            "remaining": 0,
+            "progress_pct": 0.0,
             "current_msg_id": from_msg_id,
             "started_at": datetime.now().isoformat(),
             "last_activity": datetime.now().isoformat(),
@@ -458,6 +460,11 @@ class BotManager:
         self.folder_sync_status[source_id] = {
             "status": "queued",
             "processed": 0,
+            "total": 0,
+            "remaining": 0,
+            "skipped": 0,
+            "failed": 0,
+            "progress_pct": 0.0,
             "target_id": target_id,
             "job_id": job_id
         }
@@ -517,6 +524,73 @@ class BotManager:
             job["status"] = "running"
             self.folder_sync_status[source_id]["status"] = "syncing"
 
+            # Determine total messages count upfront
+            total_msgs = 0
+            try:
+                total_msgs = await client.get_chat_history_count(source_id)
+            except Exception as cnt_err:
+                logging.warning(f"[BULK FORWARD] Could not get history count for {source_id}: {cnt_err}")
+
+            job["total"] = total_msgs
+            job["remaining"] = total_msgs
+            job["progress_pct"] = 0.0
+            self.folder_sync_status[source_id].update({
+                "status": "syncing",
+                "processed": job["processed"],
+                "total": job["total"],
+                "remaining": job["remaining"],
+                "skipped": job["skipped"],
+                "failed": job["failed"],
+                "progress_pct": 0.0
+            })
+
+            def update_progress(curr_msg_id=None):
+                scanned = job["processed"] + job["skipped"] + job["failed"]
+                t = job.get("total", 0)
+                if t > 0:
+                    job["remaining"] = max(0, t - scanned)
+                    job["progress_pct"] = min(100.0, round((scanned / t) * 100, 1))
+                elif curr_msg_id:
+                    job["remaining"] = max(0, curr_msg_id)
+                    job["progress_pct"] = 0.0
+                self.folder_sync_status[source_id].update({
+                    "status": "syncing",
+                    "processed": job["processed"],
+                    "skipped": job["skipped"],
+                    "failed": job["failed"],
+                    "total": job.get("total", 0),
+                    "remaining": job.get("remaining", 0),
+                    "progress_pct": job.get("progress_pct", 0.0),
+                    "last_msg_id": curr_msg_id or job.get("current_msg_id", 0)
+                })
+
+            def save_mongo_checkpoint(curr_msg_id):
+                if self.db_a is not None:
+                    try:
+                        self.db_a.forward_progress.update_one(
+                            {"chat_id": source_id},
+                            {"$set": {
+                                "chat_id": source_id,
+                                "source_id": source_id,
+                                "channel_id": source_id,
+                                "source_name": source_title,
+                                "channel_name": source_title,
+                                "target_id": target_id,
+                                "status": "in_progress",
+                                "total_messages": job.get("total", 0),
+                                "total_copied": job["processed"],
+                                "total_skipped": job["skipped"],
+                                "total_failed": job["failed"],
+                                "remaining_messages": job.get("remaining", 0),
+                                "progress_pct": job.get("progress_pct", 0.0),
+                                "last_msg_id": curr_msg_id or job.get("current_msg_id", 0),
+                                "updated_at": datetime.now()
+                            }},
+                            upsert=True
+                        )
+                    except Exception:
+                        pass
+
             if is_public:
                 await self._init_worker_bots_if_needed()
                 logging.info(f"[BULK FORWARD] [PUBLIC LANE] Channel {source_id} ('{source_title}', @{source_username}) is PUBLIC -> Using 12 Worker Bots pool (rotating every 10 msgs).")
@@ -524,6 +598,7 @@ class BotManager:
                 logging.info(f"[BULK FORWARD] [PRIVATE LANE] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
 
             processed_groups = set()
+            first_msg_seen = False
             try:
                 async for msg in client.get_chat_history(source_id, offset_id=from_msg_id if from_msg_id > 0 else 0):
                     if job["status"] == "stopped":
@@ -531,6 +606,12 @@ class BotManager:
                     
                     job["last_activity"] = datetime.now().isoformat()
                     job["current_msg_id"] = msg.id
+
+                    if not first_msg_seen:
+                        first_msg_seen = True
+                        if not job.get("total") or job["total"] <= 0:
+                            job["total"] = msg.id
+                        update_progress(msg.id)
 
                     if to_msg_id > 0 and msg.id > to_msg_id:
                         continue
@@ -542,6 +623,7 @@ class BotManager:
                         group_id = msg.media_group_id
                         if group_id in processed_groups:
                             job["skipped"] += 1
+                            update_progress(msg.id)
                             continue
                         processed_groups.add(group_id)
 
@@ -575,33 +657,16 @@ class BotManager:
 
                             items_count = len(copied_group) if isinstance(copied_group, list) else 1
                             job["processed"] += items_count
-                            self.folder_sync_status[source_id]["processed"] = job["processed"]
+                            update_progress(msg.id)
 
                             # Checkpoint update to MongoDB every 10 messages
-                            if self.db_a is not None and job["processed"] % 10 == 0:
-                                try:
-                                    self.db_a.forward_progress.update_one(
-                                        {"chat_id": source_id},
-                                        {"$set": {
-                                            "chat_id": source_id,
-                                            "source_id": source_id,
-                                            "channel_id": source_id,
-                                            "source_name": source_title,
-                                            "channel_name": source_title,
-                                            "target_id": target_id,
-                                            "status": "in_progress",
-                                            "total_copied": job["processed"],
-                                            "last_msg_id": msg.id,
-                                            "updated_at": datetime.now()
-                                        }},
-                                        upsert=True
-                                    )
-                                except Exception:
-                                    pass
+                            if job["processed"] % 10 == 0:
+                                save_mongo_checkpoint(msg.id)
 
                             await asyncio.sleep(2.0)
                         except Exception as album_err:
                             job["failed"] += 1
+                            update_progress(msg.id)
                             logging.warning(f"[ALBUM ERR] Failed to copy group {group_id}: {album_err}")
                         continue
 
@@ -610,6 +675,7 @@ class BotManager:
                     # ==============================================================
                     if msg.photo:
                         job["skipped"] += 1
+                        update_progress(msg.id)
                         continue
 
                     is_media = bool(msg.video or msg.document)
@@ -617,6 +683,7 @@ class BotManager:
 
                     if not (is_media or is_text):
                         job["skipped"] += 1
+                        update_progress(msg.id)
                         continue
 
                     if is_text:
@@ -643,33 +710,16 @@ class BotManager:
                                     disable_web_page_preview=False
                                 )
                             job["processed"] += 1
-                            self.folder_sync_status[source_id]["processed"] = job["processed"]
+                            update_progress(msg.id)
 
                             # Checkpoint update to MongoDB every 10 messages
-                            if self.db_a is not None and job["processed"] % 10 == 0:
-                                try:
-                                    self.db_a.forward_progress.update_one(
-                                        {"chat_id": source_id},
-                                        {"$set": {
-                                            "chat_id": source_id,
-                                            "source_id": source_id,
-                                            "channel_id": source_id,
-                                            "source_name": source_title,
-                                            "channel_name": source_title,
-                                            "target_id": target_id,
-                                            "status": "in_progress",
-                                            "total_copied": job["processed"],
-                                            "last_msg_id": msg.id,
-                                            "updated_at": datetime.now()
-                                        }},
-                                        upsert=True
-                                    )
-                                except Exception:
-                                    pass
+                            if job["processed"] % 10 == 0:
+                                save_mongo_checkpoint(msg.id)
 
                             await asyncio.sleep(1.5)
                         except Exception as text_err:
                             job["failed"] += 1
+                            update_progress(msg.id)
                         continue
 
                     file_id = None
@@ -683,6 +733,7 @@ class BotManager:
                         try:
                             if self.db_b["xData"].find_one({"_id": file_id}):
                                 job["skipped"] += 1
+                                update_progress(msg.id)
                                 continue
                         except Exception:
                             pass
@@ -718,7 +769,7 @@ class BotManager:
                             )
 
                         job["processed"] += 1
-                        self.folder_sync_status[source_id]["processed"] = job["processed"]
+                        update_progress(msg.id)
 
                         if file_id and self.db_b is not None:
                             try:
@@ -733,39 +784,29 @@ class BotManager:
                                 pass
 
                         # Checkpoint update to MongoDB every 10 messages
-                        if self.db_a is not None and job["processed"] % 10 == 0:
-                            try:
-                                self.db_a.forward_progress.update_one(
-                                    {"chat_id": source_id},
-                                    {"$set": {
-                                        "chat_id": source_id,
-                                        "source_id": source_id,
-                                        "channel_id": source_id,
-                                        "source_name": source_title,
-                                        "channel_name": source_title,
-                                        "target_id": target_id,
-                                        "status": "in_progress",
-                                        "total_copied": job["processed"],
-                                        "last_msg_id": msg.id,
-                                        "updated_at": datetime.now()
-                                    }},
-                                    upsert=True
-                                )
-                            except Exception:
-                                pass
+                        if job["processed"] % 10 == 0:
+                            save_mongo_checkpoint(msg.id)
 
                         await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
                     except Exception as copy_err:
                         job["failed"] += 1
+                        update_progress(msg.id)
                         err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
                         if "FloodWait" in err_str:
                             await asyncio.sleep(15)
 
                 if job["status"] != "stopped":
                     job["status"] = "completed"
+                    job["remaining"] = 0
+                    job["progress_pct"] = 100.0
                     self.folder_sync_status[source_id] = {
                         "status": "completed",
                         "processed": job["processed"],
+                        "total": job.get("total", job["processed"]),
+                        "remaining": 0,
+                        "skipped": job["skipped"],
+                        "failed": job["failed"],
+                        "progress_pct": 100.0,
                         "completed_at": datetime.now().isoformat()
                     }
                     if self.db_a is not None:
@@ -779,7 +820,12 @@ class BotManager:
                                     "source_name": source_title,
                                     "channel_name": source_title,
                                     "status": "completed",
+                                    "total_messages": job.get("total", job["processed"]),
                                     "total_copied": job["processed"],
+                                    "total_skipped": job["skipped"],
+                                    "total_failed": job["failed"],
+                                    "remaining_messages": 0,
+                                    "progress_pct": 100.0,
                                     "last_msg_id": job.get("current_msg_id", 0),
                                     "target_id": target_id,
                                     "completed_at": datetime.now(),
@@ -1025,7 +1071,10 @@ class BotManager:
                         "is_live": True,
                         "live_status": "active",
                         "sync_status": sync_state.get("status", "idle"),
-                        "sync_processed": sync_state.get("processed", 0)
+                        "sync_processed": sync_state.get("processed", 0),
+                        "sync_total": sync_state.get("total", 0),
+                        "sync_remaining": sync_state.get("remaining", 0),
+                        "sync_pct": sync_state.get("progress_pct", 0)
                     })
 
                 # Guarantee all folder channels are included even if not in dialogs (e.g. archived)
@@ -1074,7 +1123,10 @@ class BotManager:
                                     "is_live": True,
                                     "live_status": "active",
                                     "sync_status": sync_state.get("status", "idle"),
-                                    "sync_processed": sync_state.get("processed", 0)
+                                    "sync_processed": sync_state.get("processed", 0),
+                                    "sync_total": sync_state.get("total", 0),
+                                    "sync_remaining": sync_state.get("remaining", 0),
+                                    "sync_pct": sync_state.get("progress_pct", 0)
                                 })
                                 seen_cids.add(chat.id)
                         except Exception:
@@ -1113,11 +1165,24 @@ class BotManager:
             if self.db_a is not None:
                 try:
                     for d in dialogs:
-                        if d.get("sync_status") != "syncing":
+                        sync_state = self.folder_sync_status.get(d["id"])
+                        if sync_state:
+                            d["sync_status"] = sync_state.get("status", d.get("sync_status", "idle"))
+                            d["sync_processed"] = sync_state.get("processed", d.get("sync_processed", 0))
+                            d["sync_total"] = sync_state.get("total", d.get("sync_total", 0))
+                            d["sync_remaining"] = sync_state.get("remaining", d.get("sync_remaining", 0))
+                            d["sync_pct"] = sync_state.get("progress_pct", d.get("sync_pct", 0))
+                        elif d.get("sync_status") != "syncing":
                             p_doc = self.db_a.forward_progress.find_one({"chat_id": d["id"]})
-                            if p_doc and p_doc.get("status") == "completed":
-                                d["sync_status"] = "completed"
+                            if p_doc:
+                                if p_doc.get("status") == "completed":
+                                    d["sync_status"] = "completed"
+                                elif p_doc.get("status") == "in_progress":
+                                    d["sync_status"] = "syncing"
                                 d["sync_processed"] = p_doc.get("total_copied", 0)
+                                d["sync_total"] = p_doc.get("total_messages", 0)
+                                d["sync_remaining"] = p_doc.get("remaining_messages", 0)
+                                d["sync_pct"] = p_doc.get("progress_pct", 0)
                 except Exception:
                     pass
 

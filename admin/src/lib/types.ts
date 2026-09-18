@@ -91,6 +91,9 @@ export interface TelegramDialog {
   live_status?: 'active' | 'dead' | string;
   sync_status?: 'syncing' | 'completed' | 'idle' | string | null;
   sync_processed?: number;
+  sync_total?: number;
+  sync_remaining?: number;
+  sync_pct?: number;
 }
 
 export interface TelegramFolderChannel {
@@ -207,6 +210,8 @@ export interface ForwardJob {
   total: number;
   skipped: number;
   failed: number;
+  remaining?: number;
+  progress_pct?: number;
   current_msg_id: number;
   started_at: string;
   last_activity: string;
