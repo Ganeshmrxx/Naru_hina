@@ -44,6 +44,24 @@ async def resolve_folder_target(client, incoming_id):
         return -1004337870091, "DBXTera"
     return None, None
 
+def build_caption(original_caption, chat_id, chat_title):
+    footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}"
+    if not original_caption:
+        return footer.strip()
+    max_orig_len = 1024 - len(footer) - 5
+    if len(original_caption) > max_orig_len:
+        original_caption = original_caption[:max_orig_len] + "..."
+    return f"{original_caption}{footer}"
+
+def build_text(original_text, chat_id, chat_title):
+    footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}"
+    if not original_text:
+        return footer.strip()
+    max_orig_len = 4096 - len(footer) - 5
+    if len(original_text) > max_orig_len:
+        original_text = original_text[:max_orig_len] + "..."
+    return f"{original_text}{footer}"
+
 # MongoDB Setup
 DATABASE_URI = "mongodb+srv://test:test05@cluster0.g05zxpa.mongodb.net/?retryWrites=true&w=majority"
 DATABASE_NAME = "Cluster0"
@@ -114,7 +132,8 @@ async def copy_all_media(client: Client, source_channel_id, target_channel_id):
     # Detect source type (group or channel)
     source = await client.get_chat(source_channel_id)
     source_type = source.type  # "group" / "supergroup" / "channel"
-    print(f"Source chat type: {source_type}")
+    source_title = getattr(source, "title", "") or str(source_channel_id)
+    print(f"Source chat type: {source_type}, title: {source_title}")
 
     print("Counting media messages...")
 
@@ -184,7 +203,8 @@ async def copy_all_media(client: Client, source_channel_id, target_channel_id):
             continue
 
         try:
-            copied_msg = await msg.copy(chat_id=target_channel_id)
+            caption = build_caption(msg.caption, source_channel_id, source_title)
+            copied_msg = await msg.copy(chat_id=target_channel_id, caption=caption)
             print(f"✔ Copied → {target_channel_id}, new msg ID: {copied_msg.id}")
 
             collection.insert_one({
@@ -387,8 +407,8 @@ async def auto_forward(client, message):
         return
 
     try:
-
-        copied_msg = await message.copy(chat_id=target)
+        caption = build_caption(message.caption, incoming_id, source_title or str(incoming_id))
+        copied_msg = await message.copy(chat_id=target, caption=caption)
         print(f"✔ Copied to {target}, message ID: {copied_msg.id}")
 
         # Insert metadata into DB

@@ -42,6 +42,24 @@ class LogCaptureHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+def build_caption(original_caption, chat_id, chat_title):
+    footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}"
+    if not original_caption:
+        return footer.strip()
+    max_orig_len = 1024 - len(footer) - 5
+    if len(original_caption) > max_orig_len:
+        original_caption = original_caption[:max_orig_len] + "..."
+    return f"{original_caption}{footer}"
+
+def build_text(original_text, chat_id, chat_title):
+    footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}"
+    if not original_text:
+        return footer.strip()
+    max_orig_len = 4096 - len(footer) - 5
+    if len(original_text) > max_orig_len:
+        original_text = original_text[:max_orig_len] + "..."
+    return f"{original_text}{footer}"
+
 class BotManager:
     BOT_CONFIGS = {
         "movie_forwarder": {
@@ -433,22 +451,24 @@ class BotManager:
                     self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
                     return
 
-            # Determine if source channel is Public (has username) or Private
+            # Determine if source channel is Public (has username) or Private, and fetch title
             is_public = False
             source_username = None
+            source_title = str(source_id)
             try:
                 c_info = await client.get_chat(source_id)
+                source_title = getattr(c_info, "title", "") or str(source_id)
                 source_username = getattr(c_info, "username", None)
                 if source_username:
                     is_public = True
             except Exception as ce:
-                logging.warning(f"[BULK FORWARD] Could not determine username for {source_id}: {ce}")
+                logging.warning(f"[BULK FORWARD] Could not determine chat info for {source_id}: {ce}")
 
             if is_public:
                 await self._init_worker_bots_if_needed()
-                logging.info(f"[BULK FORWARD] Channel {source_id} (@{source_username}) is PUBLIC -> Using 12 Worker Bots pool (rotating every 10 msgs).")
+                logging.info(f"[BULK FORWARD] Channel {source_id} ('{source_title}', @{source_username}) is PUBLIC -> Using 12 Worker Bots pool (rotating every 10 msgs).")
             else:
-                logging.info(f"[BULK FORWARD] Channel {source_id} is PRIVATE -> Using Userbot (backup_forwarder).")
+                logging.info(f"[BULK FORWARD] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
 
             try:
                 async for msg in client.get_chat_history(source_id, offset_id=from_msg_id if from_msg_id > 0 else 0):
@@ -466,65 +486,107 @@ class BotManager:
                         job["skipped"] += 1
                         continue
 
-                    if msg.video or msg.document or (msg.photo and getattr(msg, "media_group_id", None)):
-                        file_id = None
-                        if msg.video:
-                            file_id = getattr(msg.video, 'file_unique_id', None)
-                        elif msg.photo:
-                            file_id = getattr(msg.photo, 'file_unique_id', None)
-                        elif msg.document:
-                            file_id = getattr(msg.document, 'file_unique_id', None)
+                    is_media = bool(msg.video or msg.document or (msg.photo and getattr(msg, "media_group_id", None)))
+                    is_text = bool(msg.text and ("http" in msg.text or "tera" in msg.text.lower()))
 
-                        # Check duplicate in Cluster B xData
-                        if file_id and self.db_b is not None:
-                            try:
-                                if self.db_b["xData"].find_one({"_id": file_id}):
-                                    job["skipped"] += 1
-                                    continue
-                            except Exception:
-                                pass
+                    if not (is_media or is_text):
+                        job["skipped"] += 1
+                        continue
 
+                    if is_text:
+                        text_to_send = build_text(msg.text, source_id, source_title)
                         try:
-                            copied_msg = None
                             if is_public and self.worker_bots:
                                 worker_bot = self._get_next_worker_bot()
                                 try:
-                                    copied_msg = await worker_bot.copy_message(
+                                    copied_msg = await worker_bot.send_message(
                                         chat_id=target_id,
-                                        from_chat_id=source_username,
-                                        message_id=msg.id
+                                        text=text_to_send,
+                                        disable_web_page_preview=False
                                     )
-                                except Exception as wb_err:
-                                    logging.warning(f"[WORKER ERR] Worker copy failed ({wb_err}), fallback to Userbot...")
-                                    copied_msg = await client.copy_message(
+                                except Exception:
+                                    copied_msg = await client.send_message(
                                         chat_id=target_id,
-                                        from_chat_id=source_id,
-                                        message_id=msg.id
+                                        text=text_to_send,
+                                        disable_web_page_preview=False
                                     )
                             else:
+                                copied_msg = await client.send_message(
+                                    chat_id=target_id,
+                                    text=text_to_send,
+                                    disable_web_page_preview=False
+                                )
+                            job["processed"] += 1
+                            self.folder_sync_status[source_id]["processed"] = job["processed"]
+                            await asyncio.sleep(1.5)
+                        except Exception as text_err:
+                            job["failed"] += 1
+                        continue
+
+                    file_id = None
+                    if msg.video:
+                        file_id = getattr(msg.video, 'file_unique_id', None)
+                    elif msg.photo:
+                        file_id = getattr(msg.photo, 'file_unique_id', None)
+                    elif msg.document:
+                        file_id = getattr(msg.document, 'file_unique_id', None)
+
+                    # Check duplicate in Cluster B xData
+                    if file_id and self.db_b is not None:
+                        try:
+                            if self.db_b["xData"].find_one({"_id": file_id}):
+                                job["skipped"] += 1
+                                continue
+                        except Exception:
+                            pass
+
+                    # Build caption with channel ID and channel name
+                    caption = build_caption(msg.caption, source_id, source_title)
+
+                    try:
+                        copied_msg = None
+                        if is_public and self.worker_bots:
+                            worker_bot = self._get_next_worker_bot()
+                            try:
+                                copied_msg = await worker_bot.copy_message(
+                                    chat_id=target_id,
+                                    from_chat_id=source_username,
+                                    message_id=msg.id,
+                                    caption=caption
+                                )
+                            except Exception as wb_err:
+                                logging.warning(f"[WORKER ERR] Worker copy failed ({wb_err}), fallback to Userbot...")
                                 copied_msg = await client.copy_message(
                                     chat_id=target_id,
                                     from_chat_id=source_id,
-                                    message_id=msg.id
+                                    message_id=msg.id,
+                                    caption=caption
                                 )
+                        else:
+                            copied_msg = await client.copy_message(
+                                chat_id=target_id,
+                                from_chat_id=source_id,
+                                message_id=msg.id,
+                                caption=caption
+                            )
 
-                            job["processed"] += 1
-                            self.folder_sync_status[source_id]["processed"] = job["processed"]
+                        job["processed"] += 1
+                        self.folder_sync_status[source_id]["processed"] = job["processed"]
 
-                            if file_id and self.db_b is not None:
-                                try:
-                                    self.db_b["xData"].insert_one({
-                                        "_id": file_id,
-                                        "channel_id": target_id,
-                                        "source_id": source_id,
-                                        "message_id": getattr(copied_msg, "id", None),
-                                        "copied_at": datetime.now().isoformat()
-                                    })
-                                except Exception:
-                                    pass
+                        if file_id and self.db_b is not None:
+                            try:
+                                self.db_b["xData"].insert_one({
+                                    "_id": file_id,
+                                    "channel_id": target_id,
+                                    "source_id": source_id,
+                                    "message_id": getattr(copied_msg, "id", None),
+                                    "copied_at": datetime.now().isoformat()
+                                })
+                            except Exception:
+                                pass
 
-                            await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
-                        except Exception as copy_err:
+                        await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
+                    except Exception as copy_err:
                             job["failed"] += 1
                             err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
                             if "FloodWait" in err_str:
