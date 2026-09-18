@@ -167,7 +167,7 @@ class BotManager:
         info = {"title": str(chat_id), "username": None, "is_public": False}
         if client:
             try:
-                c = await client.get_chat(chat_id)
+                c = await asyncio.wait_for(client.get_chat(chat_id), timeout=8.0)
                 uname = getattr(c, "username", None)
                 title = getattr(c, "title", "") or str(chat_id)
                 info = {"title": title, "username": uname, "is_public": bool(uname)}
@@ -177,28 +177,30 @@ class BotManager:
         return info
 
     async def _init_worker_bots_if_needed(self):
-        """Initializes worker bots pool on-demand for public channel copying."""
+        """Initializes fast worker bots pool on-demand for public channel copying."""
         if self.worker_bots_initialized:
             return
         try:
             from config import Config
             from pyrogram import Client
-            logging.info(f"[WORKER POOL] Initializing {len(Config.BOT_WORKERS)} Worker Bots...")
-            for idx, token in enumerate(Config.BOT_WORKERS):
+            # Start up to 2 active worker bots to prevent socket exhaustion and timeouts on shared VPS
+            worker_tokens = Config.BOT_WORKERS[:2]
+            logging.info(f"[WORKER POOL] Initializing {len(worker_tokens)} Fast Worker Bot(s)...")
+            for idx, token in enumerate(worker_tokens):
                 try:
                     wb = Client(
                         f"botmgr_worker_{idx+1}",
                         api_id=Config.API_ID2,
                         api_hash=Config.API_HASH2,
-                        bot_token=token,
-                        in_memory=True
+                        bot_token=token
                     )
-                    await wb.start()
+                    await asyncio.wait_for(wb.start(), timeout=12.0)
                     self.worker_bots.append(wb)
+                    logging.info(f"[WORKER POOL] Worker bot {idx+1} ready.")
                 except Exception as e:
-                    logging.warning(f"[WORKER POOL] Worker bot {idx+1} start failed: {e}")
+                    logging.warning(f"[WORKER POOL] Worker bot {idx+1} start failed/timed out: {e}")
             self.worker_bots_initialized = True
-            logging.info(f"[WORKER POOL] Ready with {len(self.worker_bots)} active worker bots.")
+            logging.info(f"[WORKER POOL] Ready with {len(self.worker_bots)} active worker bot(s).")
         except Exception as e:
             logging.error(f"[WORKER POOL] Initialization error: {e}")
 
@@ -206,7 +208,7 @@ class BotManager:
         """Rotates through worker bots pool, switching bot every 10 messages."""
         if not getattr(self, "worker_bots", []):
             return None
-        bot = self.worker_bots[self.worker_bot_idx]
+        bot = self.worker_bots[self.worker_bot_idx % len(self.worker_bots)]
         self.worker_bot_counter += 1
         if self.worker_bot_counter >= 10:
             self.worker_bot_counter = 0
@@ -436,7 +438,7 @@ class BotManager:
             "status": "queued",
             "is_public": is_public,
             "worker_type": "worker_bots" if is_public else ("userbot" if is_public is False else "unknown"),
-            "worker_label": "🤖 12 Worker Bots (Public)" if is_public else ("👤 Userbot (Private)" if is_public is False else "Detecting..."),
+            "worker_label": "🤖 Worker Bot (Public)" if is_public else ("👤 Userbot (Private)" if is_public is False else "Detecting..."),
             "processed": 0,
             "total": 0,
             "skipped": 0,
@@ -498,7 +500,7 @@ class BotManager:
                 is_public = info.get("is_public", False)
         else:
             try:
-                c_info = await client.get_chat(source_id)
+                c_info = await asyncio.wait_for(client.get_chat(source_id), timeout=8.0)
                 source_title = getattr(c_info, "title", "") or str(source_id)
                 source_username = getattr(c_info, "username", None)
                 if is_public is None:
@@ -516,7 +518,7 @@ class BotManager:
         job["source_name"] = source_title
         job["is_public"] = is_public
         job["worker_type"] = "worker_bots" if is_public else "userbot"
-        job["worker_label"] = "🤖 12 Worker Bots (Public)" if is_public else "👤 Userbot (Private)"
+        job["worker_label"] = "🤖 Worker Bot (Public)" if is_public else "👤 Userbot (Private)"
 
         # Step 3: Acquire lane lock so only ONE Public channel runs on Worker Bots AND only ONE Private channel runs on Userbot concurrently
         lane_lock = self._public_forward_lock if is_public else self._private_forward_lock
@@ -527,9 +529,9 @@ class BotManager:
             # Determine total messages count upfront
             total_msgs = 0
             try:
-                total_msgs = await client.get_chat_history_count(source_id)
+                total_msgs = await asyncio.wait_for(client.get_chat_history_count(source_id), timeout=8.0)
             except Exception as cnt_err:
-                logging.warning(f"[BULK FORWARD] Could not get history count for {source_id}: {cnt_err}")
+                logging.warning(f"[BULK FORWARD] History count timed out or unavailable for {source_id}: {cnt_err}")
 
             job["total"] = total_msgs
             job["remaining"] = total_msgs
@@ -593,7 +595,7 @@ class BotManager:
 
             if is_public:
                 await self._init_worker_bots_if_needed()
-                logging.info(f"[BULK FORWARD] [PUBLIC LANE] Channel {source_id} ('{source_title}', @{source_username}) is PUBLIC -> Using 12 Worker Bots pool (rotating every 10 msgs).")
+                logging.info(f"[BULK FORWARD] [PUBLIC LANE] Channel {source_id} ('{source_title}', @{source_username}) is PUBLIC -> Using Worker Bot pool.")
             else:
                 logging.info(f"[BULK FORWARD] [PRIVATE LANE] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
 
@@ -865,7 +867,11 @@ class BotManager:
                     client = self.bots["backup_forwarder"].get("instance")
                     if client and getattr(client, "is_connected", False):
                         from pyrogram.raw.functions.messages import GetDialogFilters
-                        filters = await client.invoke(GetDialogFilters())
+                        try:
+                            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=10.0)
+                        except Exception as fe:
+                            logging.warning(f"[AUTO SYNC] GetDialogFilters timed out: {fe}")
+                            filters = []
                         folder_targets = {
                             5: (-1004401442087, "videoDB"),
                             6: (-1004337870091, "TeraDB")
@@ -919,7 +925,7 @@ class BotManager:
                             c_title = info.get("title", str(cid))
 
                             if c_is_public and not has_running_public:
-                                logging.info(f"[AUTO SYNC] [PUBLIC LANE] Auto-launching 12 Worker Bots sync for '{c_title}' ({cid}) -> {tid} ({fname})")
+                                logging.info(f"[AUTO SYNC] [PUBLIC LANE] Auto-launching Worker Bot sync for '{c_title}' ({cid}) -> {tid} ({fname})")
                                 await self.start_bulk_forward_job(source_id=cid, target_id=tid, is_public=True, source_name=c_title)
                                 has_running_public = True
 
@@ -978,7 +984,7 @@ class BotManager:
                 folder_6_channels = set()  # TeraDB -> DBXTera (-1004337870091)
                 folder_4_channels = set()  # public hub
                 try:
-                    filters = await client.invoke(GetDialogFilters())
+                    filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=10.0)
                     for f in filters:
                         fid = getattr(f, 'id', None)
                         ftitle = str(getattr(f, 'title', '')).lower()

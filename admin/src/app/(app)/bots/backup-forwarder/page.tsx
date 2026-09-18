@@ -499,7 +499,7 @@ export default function BackupForwarderDetailPage() {
                       {/* Worker Type Badge */}
                       {isWorkerBots ? (
                         <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
-                          🤖 12 Worker Bots (Public)
+                          🤖 Worker Bot (Public)
                         </span>
                       ) : isUserbot ? (
                         <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">

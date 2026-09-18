@@ -119,7 +119,7 @@ export default function ForwardJobsPage() {
                       <td className="py-3 px-4">
                         {isWorkerBots ? (
                           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 whitespace-nowrap">
-                            🤖 12 Worker Bots
+                            🤖 Worker Bot
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 whitespace-nowrap">
