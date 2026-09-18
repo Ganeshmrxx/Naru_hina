@@ -470,6 +470,7 @@ class BotManager:
             else:
                 logging.info(f"[BULK FORWARD] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
 
+            processed_groups = set()
             try:
                 async for msg in client.get_chat_history(source_id, offset_id=from_msg_id if from_msg_id > 0 else 0):
                     if job["status"] == "stopped":
@@ -481,12 +482,84 @@ class BotManager:
                     if to_msg_id > 0 and msg.id > to_msg_id:
                         continue
 
-                    # Rule: Single photos are skipped (only videos or album media groups copied)
-                    if msg.photo and not getattr(msg, "media_group_id", None):
+                    # ==============================================================
+                    # RULE 1: GROUPED MESSAGES (ALBUMS) -> FULL GROUP COPIED TOGETHER
+                    # ==============================================================
+                    if getattr(msg, "media_group_id", None):
+                        group_id = msg.media_group_id
+                        if group_id in processed_groups:
+                            job["skipped"] += 1
+                            continue
+                        processed_groups.add(group_id)
+
+                        caption = build_caption(None, source_id, source_title)
+                        copied_group = None
+                        try:
+                            if is_public and self.worker_bots:
+                                worker_bot = self._get_next_worker_bot()
+                                try:
+                                    copied_group = await worker_bot.copy_media_group(
+                                        chat_id=target_id,
+                                        from_chat_id=source_username,
+                                        message_id=msg.id,
+                                        captions=caption
+                                    )
+                                except Exception as wb_err:
+                                    logging.warning(f"[WORKER ERR] Album copy failed ({wb_err}), fallback to Userbot...")
+                                    copied_group = await client.copy_media_group(
+                                        chat_id=target_id,
+                                        from_chat_id=source_id,
+                                        message_id=msg.id,
+                                        captions=caption
+                                    )
+                            else:
+                                copied_group = await client.copy_media_group(
+                                    chat_id=target_id,
+                                    from_chat_id=source_id,
+                                    message_id=msg.id,
+                                    captions=caption
+                                )
+
+                            items_count = len(copied_group) if isinstance(copied_group, list) else 1
+                            job["processed"] += items_count
+                            self.folder_sync_status[source_id]["processed"] = job["processed"]
+
+                            # Checkpoint update to MongoDB every 10 messages
+                            if self.db_a is not None and job["processed"] % 10 == 0:
+                                try:
+                                    self.db_a.forward_progress.update_one(
+                                        {"chat_id": source_id},
+                                        {"$set": {
+                                            "chat_id": source_id,
+                                            "source_id": source_id,
+                                            "channel_id": source_id,
+                                            "source_name": source_title,
+                                            "channel_name": source_title,
+                                            "target_id": target_id,
+                                            "status": "in_progress",
+                                            "total_copied": job["processed"],
+                                            "last_msg_id": msg.id,
+                                            "updated_at": datetime.now()
+                                        }},
+                                        upsert=True
+                                    )
+                                except Exception:
+                                    pass
+
+                            await asyncio.sleep(2.0)
+                        except Exception as album_err:
+                            job["failed"] += 1
+                            logging.warning(f"[ALBUM ERR] Failed to copy group {group_id}: {album_err}")
+                        continue
+
+                    # ==============================================================
+                    # RULE 2: SINGLE PHOTO -> DO NOT COPY
+                    # ==============================================================
+                    if msg.photo:
                         job["skipped"] += 1
                         continue
 
-                    is_media = bool(msg.video or msg.document or (msg.photo and getattr(msg, "media_group_id", None)))
+                    is_media = bool(msg.video or msg.document)
                     is_text = bool(msg.text and ("http" in msg.text or "tera" in msg.text.lower()))
 
                     if not (is_media or is_text):
@@ -518,6 +591,29 @@ class BotManager:
                                 )
                             job["processed"] += 1
                             self.folder_sync_status[source_id]["processed"] = job["processed"]
+
+                            # Checkpoint update to MongoDB every 10 messages
+                            if self.db_a is not None and job["processed"] % 10 == 0:
+                                try:
+                                    self.db_a.forward_progress.update_one(
+                                        {"chat_id": source_id},
+                                        {"$set": {
+                                            "chat_id": source_id,
+                                            "source_id": source_id,
+                                            "channel_id": source_id,
+                                            "source_name": source_title,
+                                            "channel_name": source_title,
+                                            "target_id": target_id,
+                                            "status": "in_progress",
+                                            "total_copied": job["processed"],
+                                            "last_msg_id": msg.id,
+                                            "updated_at": datetime.now()
+                                        }},
+                                        upsert=True
+                                    )
+                                except Exception:
+                                    pass
+
                             await asyncio.sleep(1.5)
                         except Exception as text_err:
                             job["failed"] += 1
@@ -526,8 +622,6 @@ class BotManager:
                     file_id = None
                     if msg.video:
                         file_id = getattr(msg.video, 'file_unique_id', None)
-                    elif msg.photo:
-                        file_id = getattr(msg.photo, 'file_unique_id', None)
                     elif msg.document:
                         file_id = getattr(msg.document, 'file_unique_id', None)
 
@@ -585,14 +679,34 @@ class BotManager:
                             except Exception:
                                 pass
 
+                        # Checkpoint update to MongoDB every 10 messages
+                        if self.db_a is not None and job["processed"] % 10 == 0:
+                            try:
+                                self.db_a.forward_progress.update_one(
+                                    {"chat_id": source_id},
+                                    {"$set": {
+                                        "chat_id": source_id,
+                                        "source_id": source_id,
+                                        "channel_id": source_id,
+                                        "source_name": source_title,
+                                        "channel_name": source_title,
+                                        "target_id": target_id,
+                                        "status": "in_progress",
+                                        "total_copied": job["processed"],
+                                        "last_msg_id": msg.id,
+                                        "updated_at": datetime.now()
+                                    }},
+                                    upsert=True
+                                )
+                            except Exception:
+                                pass
+
                         await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
                     except Exception as copy_err:
-                            job["failed"] += 1
-                            err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
-                            if "FloodWait" in err_str:
-                                await asyncio.sleep(15)
-                    else:
-                        job["skipped"] += 1
+                        job["failed"] += 1
+                        err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
+                        if "FloodWait" in err_str:
+                            await asyncio.sleep(15)
 
                 if job["status"] != "stopped":
                     job["status"] = "completed"
@@ -607,9 +721,15 @@ class BotManager:
                                 {"chat_id": source_id},
                                 {"$set": {
                                     "chat_id": source_id,
+                                    "source_id": source_id,
+                                    "channel_id": source_id,
+                                    "source_name": source_title,
+                                    "channel_name": source_title,
                                     "status": "completed",
                                     "total_copied": job["processed"],
+                                    "last_msg_id": job.get("current_msg_id", 0),
                                     "target_id": target_id,
+                                    "completed_at": datetime.now(),
                                     "updated_at": datetime.now()
                                 }},
                                 upsert=True

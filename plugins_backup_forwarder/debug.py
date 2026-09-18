@@ -365,41 +365,53 @@ async def auto_forward(client, message):
 
     print("chattype", message.chat.type)
 
+    # Rule 1: Grouped messages (albums) -> Copy entire media group together
+    if getattr(message, "media_group_id", None):
+        group_id = message.media_group_id
+        if "processed_groups" not in _folder_cache:
+            _folder_cache["processed_groups"] = set()
+        if group_id in _folder_cache["processed_groups"]:
+            return
+        _folder_cache["processed_groups"].add(group_id)
+
+        caption = build_caption(None, incoming_id, source_title or str(incoming_id))
+        try:
+            copied_group = await client.copy_media_group(chat_id=target, from_chat_id=incoming_id, message_id=message.id, captions=caption)
+            print(f"✔ Copied complete album (group {group_id}) to {target}")
+            return
+        except Exception as ge:
+            print(f"❌ Error copying live media group {group_id}: {ge}")
+            return
+
+    # Rule 2: Single photo -> Do not copy
+    if message.photo:
+        return
+
     # Check chat type
     if message.chat.type == ChatType.GROUP or message.chat.type == ChatType.SUPERGROUP:
-
         # Only forward videos from groups
         if message.video:
             video_id = message.video.file_unique_id
             media_type = "video"
-
             duration = message.video.duration
             size = message.video.file_size
         else:
             return  # skip non-video messages in group
 
     elif message.chat.type == ChatType.CHANNEL:
-
-        # Forward videos and photos from channels
         if message.video:
-
             video_id = message.video.file_unique_id
             media_type = "video"
-
-            print(video_id)
             duration = message.video.duration
             size = message.video.file_size
-        elif message.photo:
-            video_id = message.photo.file_unique_id
-            media_type = "photo"
-
-            duration = None
-            size = message.photo.file_size
+        elif message.document and getattr(message.document, 'mime_type', '').startswith('video/'):
+            video_id = message.document.file_unique_id
+            media_type = "video"
+            duration = 0
+            size = message.document.file_size
         else:
             return  # skip unsupported media
-
     else:
-
         return  # skip other chat types
 
     if db["xData"].find_one({"_id": video_id}):
