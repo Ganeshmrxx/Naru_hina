@@ -177,15 +177,15 @@ class BotManager:
         return info
 
     async def _init_worker_bots_if_needed(self):
-        """Initializes fast worker bots pool on-demand for public channel copying."""
+        """Initializes fast worker bot on-demand for public channel copying."""
         if self.worker_bots_initialized:
             return
         try:
             from config import Config
             from pyrogram import Client
-            # Start up to 2 active worker bots to prevent socket exhaustion and timeouts on shared VPS
-            worker_tokens = Config.BOT_WORKERS[:2]
-            logging.info(f"[WORKER POOL] Initializing {len(worker_tokens)} Fast Worker Bot(s)...")
+            # Start 1 fast worker bot with sufficient timeout for initial DC auth key exchange
+            worker_tokens = Config.BOT_WORKERS[:1]
+            logging.info(f"[WORKER POOL] Initializing Fast Worker Bot...")
             for idx, token in enumerate(worker_tokens):
                 try:
                     wb = Client(
@@ -194,9 +194,10 @@ class BotManager:
                         api_hash=Config.API_HASH2,
                         bot_token=token
                     )
-                    await asyncio.wait_for(wb.start(), timeout=12.0)
+                    await asyncio.wait_for(wb.start(), timeout=35.0)
                     self.worker_bots.append(wb)
-                    logging.info(f"[WORKER POOL] Worker bot {idx+1} ready.")
+                    me = await wb.get_me()
+                    logging.info(f"[WORKER POOL] Worker bot ready as @{getattr(me, 'username', 'bot')} ({getattr(me, 'id', 'unknown')}).")
                 except Exception as e:
                     logging.warning(f"[WORKER POOL] Worker bot {idx+1} start failed/timed out: {e}")
             self.worker_bots_initialized = True

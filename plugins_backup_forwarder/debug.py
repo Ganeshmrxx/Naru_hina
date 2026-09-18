@@ -15,7 +15,7 @@ async def resolve_folder_target(client, incoming_id):
     if now - _folder_cache["time"] > 60:
         try:
             from pyrogram.raw.functions.messages import GetDialogFilters
-            filters = await client.invoke(GetDialogFilters())
+            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=8.0)
             _folder_cache[5] = set()
             _folder_cache[6] = set()
             for f in filters:
@@ -341,19 +341,7 @@ async def auto_forward(client, message):
     else:
         target, tn = await resolve_folder_target(client, incoming_id)
 
-    if not target:
-        if message.chat.type == ChatType.GROUP or message.chat.type == ChatType.SUPERGROUP:
-            try:
-                db["xDataChannels"].insert_one({
-                    "_id": incoming_id,
-                    "source_name": source_title,
-                    "target": -1003253102275,
-                    "target_name": "Mix"
-                })
-                await client.send_message("@ganeshmrxx", f"⏳ new group...{source_title}, id {incoming_id}")
-                print("Saved mapping:", {source_title})
-            except Exception as e:
-                print("Group already mapped:", {incoming_id})
+    if not target or target == -1003253102275 or str(tn).lower() == "mix":
         return
 
     print("Target Channel:", target, "Name:", tn)
@@ -376,7 +364,10 @@ async def auto_forward(client, message):
 
         caption = build_caption(None, incoming_id, source_title or str(incoming_id))
         try:
-            copied_group = await client.copy_media_group(chat_id=target, from_chat_id=incoming_id, message_id=message.id, captions=caption)
+            copied_group = await asyncio.wait_for(
+                client.copy_media_group(chat_id=target, from_chat_id=incoming_id, message_id=message.id, captions=caption),
+                timeout=15.0
+            )
             print(f"✔ Copied complete album (group {group_id}) to {target}")
             return
         except Exception as ge:
@@ -420,7 +411,10 @@ async def auto_forward(client, message):
 
     try:
         caption = build_caption(message.caption, incoming_id, source_title or str(incoming_id))
-        copied_msg = await message.copy(chat_id=target, caption=caption)
+        copied_msg = await asyncio.wait_for(
+            message.copy(chat_id=target, caption=caption),
+            timeout=15.0
+        )
         print(f"✔ Copied to {target}, message ID: {copied_msg.id}")
 
         # Insert metadata into DB
