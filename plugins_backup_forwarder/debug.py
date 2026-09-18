@@ -7,25 +7,25 @@ from pyrogram import Client, filters
 from pyrogram.enums import ChatType
 from pyrogram.errors import FloodWait, RPCError
 
-# Folder targets cache
+# Folder targets cache (cached for 5 minutes)
 _folder_cache = {"time": 0, 5: set(), 6: set()}
 
 async def resolve_folder_target(client, incoming_id):
     now = time.time()
-    if now - _folder_cache["time"] > 60:
+    if now - _folder_cache["time"] > 300 or (not _folder_cache[5] and not _folder_cache[6]):
         try:
             from pyrogram.raw.functions.messages import GetDialogFilters
             filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=8.0)
-            _folder_cache[5] = set()
-            _folder_cache[6] = set()
+            f5 = set()
+            f6 = set()
             for f in filters:
                 fid = getattr(f, 'id', None)
                 ftitle = str(getattr(f, 'title', '')).lower()
                 target_set = None
                 if fid == 5 or ('video' in ftitle and 'db' in ftitle):
-                    target_set = _folder_cache[5]
+                    target_set = f5
                 elif fid == 6 or ('tera' in ftitle and 'db' in ftitle):
-                    target_set = _folder_cache[6]
+                    target_set = f6
                 if target_set is not None:
                     for p in getattr(f, 'include_peers', []):
                         cid = getattr(p, 'channel_id', getattr(p, 'chat_id', None))
@@ -33,8 +33,12 @@ async def resolve_folder_target(client, incoming_id):
                             clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
                             target_set.add(int(f"-100{clean_cid}"))
                             target_set.add(clean_cid)
-            _folder_cache["time"] = now
+            if f5 or f6:
+                _folder_cache[5] = f5
+                _folder_cache[6] = f6
+                _folder_cache["time"] = now
         except Exception as e:
+            _folder_cache["time"] = now - 240  # retry in 60s instead of immediately
             print("Folder filter fetch error:", e)
 
     clean_id = int(str(incoming_id).replace("-100", "").replace("-", ""))
@@ -320,6 +324,13 @@ async def detect_and_save_mapping(client, message):
 async def auto_forward(client, message):
     incoming_id = message.chat.id
     source_title = message.chat.title
+
+    # CRITICAL GUARD: Target storage channels must NEVER be processed by auto_forward!
+    # DBXVideos (-1004401442087), DBXTera (-1004337870091), Mix (-1003253102275)
+    TARGET_CHANNELS = {-1004401442087, -1004337870091, -1003253102275, 4401442087, 4337870091, 3253102275}
+    clean_inc = int(str(incoming_id).replace("-100", "").replace("-", ""))
+    if incoming_id in TARGET_CHANNELS or clean_inc in TARGET_CHANNELS:
+        return
 
     messageType = None
 

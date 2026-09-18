@@ -154,6 +154,24 @@ class BotManager:
         self.worker_bots_initialized = False
         self.worker_bot_idx = 0
         self.worker_bot_counter = 0
+        self._dialog_filters_cache = None
+        self._dialog_filters_cache_time = 0
+
+    async def get_dialog_filters(self, client, max_age: int = 300) -> list:
+        """Fetch Telegram dialog filters with 5-minute cache to prevent MTProto timeouts."""
+        now = time.time()
+        if self._dialog_filters_cache is not None and (now - self._dialog_filters_cache_time < max_age):
+            return self._dialog_filters_cache
+        try:
+            from pyrogram.raw.functions.messages import GetDialogFilters
+            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=10.0)
+            if filters:
+                self._dialog_filters_cache = filters
+                self._dialog_filters_cache_time = now
+            return self._dialog_filters_cache or []
+        except Exception as fe:
+            logging.warning(f"Could not fetch dialog filters (using cache fallback): {fe}")
+            return self._dialog_filters_cache or []
 
     async def get_channel_info(self, chat_id: int) -> dict:
         """Helper to get and cache channel title, username and privacy status."""
@@ -639,36 +657,48 @@ class BotManager:
                                 if is_public and self.worker_bots:
                                     worker_bot = self._get_next_worker_bot()
                                     try:
-                                        copied_group = await worker_bot.copy_media_group(
-                                            chat_id=target_id,
-                                            from_chat_id=source_username,
-                                            message_id=msg.id,
-                                            captions=caption
+                                        copied_group = await asyncio.wait_for(
+                                            worker_bot.copy_media_group(
+                                                chat_id=target_id,
+                                                from_chat_id=source_username,
+                                                message_id=msg.id,
+                                                captions=caption
+                                            ),
+                                            timeout=25.0
                                         )
                                     except FloodWait as fw:
                                         wait_time = getattr(fw, 'value', 10) + 2
                                         logging.warning(f"[FLOOD WAIT] Worker bot hit FloodWait: {wait_time}s on album. Retrying on userbot...")
                                         await asyncio.sleep(wait_time)
-                                        copied_group = await client.copy_media_group(
-                                            chat_id=target_id,
-                                            from_chat_id=source_id,
-                                            message_id=msg.id,
-                                            captions=caption
+                                        copied_group = await asyncio.wait_for(
+                                            client.copy_media_group(
+                                                chat_id=target_id,
+                                                from_chat_id=source_id,
+                                                message_id=msg.id,
+                                                captions=caption
+                                            ),
+                                            timeout=25.0
                                         )
                                     except Exception as wb_err:
                                         logging.warning(f"[WORKER ERR] Album copy failed ({wb_err}), fallback to Userbot...")
-                                        copied_group = await client.copy_media_group(
+                                        copied_group = await asyncio.wait_for(
+                                            client.copy_media_group(
+                                                chat_id=target_id,
+                                                from_chat_id=source_id,
+                                                message_id=msg.id,
+                                                captions=caption
+                                            ),
+                                            timeout=25.0
+                                        )
+                                else:
+                                    copied_group = await asyncio.wait_for(
+                                        client.copy_media_group(
                                             chat_id=target_id,
                                             from_chat_id=source_id,
                                             message_id=msg.id,
                                             captions=caption
-                                        )
-                                else:
-                                    copied_group = await client.copy_media_group(
-                                        chat_id=target_id,
-                                        from_chat_id=source_id,
-                                        message_id=msg.id,
-                                        captions=caption
+                                        ),
+                                        timeout=25.0
                                     )
 
                                 items_count = len(copied_group) if isinstance(copied_group, list) else 1
@@ -686,6 +716,12 @@ class BotManager:
                                 else:
                                     await asyncio.sleep(2.0)
                                 break
+                            except asyncio.TimeoutError:
+                                logging.warning(f"[TIMEOUT] Album copy timed out after 25s (attempt {attempt+1}/{max_retries}). Sleeping 5s...")
+                                await asyncio.sleep(5.0)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
                             except FloodWait as fw:
                                 wait_time = getattr(fw, 'value', 15) + 2
                                 logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait for album (attempt {attempt+1}/{max_retries}). Sleeping...")
@@ -732,31 +768,43 @@ class BotManager:
                                 if is_public and self.worker_bots:
                                     worker_bot = self._get_next_worker_bot()
                                     try:
-                                        copied_msg = await worker_bot.send_message(
-                                            chat_id=target_id,
-                                            text=text_to_send,
-                                            disable_web_page_preview=False
+                                        copied_msg = await asyncio.wait_for(
+                                            worker_bot.send_message(
+                                                chat_id=target_id,
+                                                text=text_to_send,
+                                                disable_web_page_preview=False
+                                            ),
+                                            timeout=15.0
                                         )
                                     except FloodWait as fw:
                                         wait_time = getattr(fw, 'value', 10) + 2
                                         logging.warning(f"[FLOOD WAIT] Worker text hit {wait_time}s wait. Retrying on userbot...")
                                         await asyncio.sleep(wait_time)
-                                        copied_msg = await client.send_message(
-                                            chat_id=target_id,
-                                            text=text_to_send,
-                                            disable_web_page_preview=False
+                                        copied_msg = await asyncio.wait_for(
+                                            client.send_message(
+                                                chat_id=target_id,
+                                                text=text_to_send,
+                                                disable_web_page_preview=False
+                                            ),
+                                            timeout=15.0
                                         )
                                     except Exception:
-                                        copied_msg = await client.send_message(
+                                        copied_msg = await asyncio.wait_for(
+                                            client.send_message(
+                                                chat_id=target_id,
+                                                text=text_to_send,
+                                                disable_web_page_preview=False
+                                            ),
+                                            timeout=15.0
+                                        )
+                                else:
+                                    copied_msg = await asyncio.wait_for(
+                                        client.send_message(
                                             chat_id=target_id,
                                             text=text_to_send,
                                             disable_web_page_preview=False
-                                        )
-                                else:
-                                    copied_msg = await client.send_message(
-                                        chat_id=target_id,
-                                        text=text_to_send,
-                                        disable_web_page_preview=False
+                                        ),
+                                        timeout=15.0
                                     )
                                 job["processed"] += 1
                                 update_progress(msg.id)
@@ -771,6 +819,12 @@ class BotManager:
                                 else:
                                     await asyncio.sleep(1.5)
                                 break
+                            except asyncio.TimeoutError:
+                                logging.warning(f"[TIMEOUT] Text send timed out after 15s (attempt {attempt+1}/{max_retries}). Sleeping 5s...")
+                                await asyncio.sleep(5.0)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
                             except FloodWait as fw:
                                 wait_time = getattr(fw, 'value', 15) + 2
                                 logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait for text (attempt {attempt+1}/{max_retries}). Sleeping...")
@@ -819,36 +873,48 @@ class BotManager:
                             if is_public and self.worker_bots:
                                 worker_bot = self._get_next_worker_bot()
                                 try:
-                                    copied_msg = await worker_bot.copy_message(
-                                        chat_id=target_id,
-                                        from_chat_id=source_username,
-                                        message_id=msg.id,
-                                        caption=caption
+                                    copied_msg = await asyncio.wait_for(
+                                        worker_bot.copy_message(
+                                            chat_id=target_id,
+                                            from_chat_id=source_username,
+                                            message_id=msg.id,
+                                            caption=caption
+                                        ),
+                                        timeout=20.0
                                     )
                                 except FloodWait as fw:
                                     wait_time = getattr(fw, 'value', 10) + 2
                                     logging.warning(f"[FLOOD WAIT] Worker hit FloodWait {wait_time}s. Retrying on userbot...")
                                     await asyncio.sleep(wait_time)
-                                    copied_msg = await client.copy_message(
-                                        chat_id=target_id,
-                                        from_chat_id=source_id,
-                                        message_id=msg.id,
-                                        caption=caption
+                                    copied_msg = await asyncio.wait_for(
+                                        client.copy_message(
+                                            chat_id=target_id,
+                                            from_chat_id=source_id,
+                                            message_id=msg.id,
+                                            caption=caption
+                                        ),
+                                        timeout=20.0
                                     )
                                 except Exception as wb_err:
                                     logging.warning(f"[WORKER ERR] Worker copy failed ({wb_err}), fallback to Userbot...")
-                                    copied_msg = await client.copy_message(
+                                    copied_msg = await asyncio.wait_for(
+                                        client.copy_message(
+                                            chat_id=target_id,
+                                            from_chat_id=source_id,
+                                            message_id=msg.id,
+                                            caption=caption
+                                        ),
+                                        timeout=20.0
+                                    )
+                            else:
+                                copied_msg = await asyncio.wait_for(
+                                    client.copy_message(
                                         chat_id=target_id,
                                         from_chat_id=source_id,
                                         message_id=msg.id,
                                         caption=caption
-                                    )
-                            else:
-                                copied_msg = await client.copy_message(
-                                    chat_id=target_id,
-                                    from_chat_id=source_id,
-                                    message_id=msg.id,
-                                    caption=caption
+                                    ),
+                                    timeout=20.0
                                 )
 
                             job["processed"] += 1
@@ -877,6 +943,12 @@ class BotManager:
                             else:
                                 await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
                             break
+                        except asyncio.TimeoutError:
+                            logging.warning(f"[TIMEOUT] Single media copy timed out after 20s (attempt {attempt+1}/{max_retries}). Sleeping 5s...")
+                            await asyncio.sleep(5.0)
+                            if attempt == max_retries - 1:
+                                job["failed"] += 1
+                                update_progress(msg.id)
                         except FloodWait as fw:
                             wait_time = getattr(fw, 'value', 15) + 2
                             logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait (attempt {attempt+1}/{max_retries}). Sleeping...")
@@ -967,12 +1039,7 @@ class BotManager:
                 if not has_running_public or not has_running_private:
                     client = self.bots["backup_forwarder"].get("instance")
                     if client and getattr(client, "is_connected", False):
-                        from pyrogram.raw.functions.messages import GetDialogFilters
-                        try:
-                            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=10.0)
-                        except Exception as fe:
-                            logging.warning(f"[AUTO SYNC] GetDialogFilters timed out: {fe}")
-                            filters = []
+                        filters = await self.get_dialog_filters(client, max_age=300)
                         folder_targets = {
                             5: (-1004401442087, "videoDB"),
                             6: (-1004337870091, "TeraDB")
@@ -1085,7 +1152,7 @@ class BotManager:
                 folder_6_channels = set()  # TeraDB -> DBXTera (-1004337870091)
                 folder_4_channels = set()  # public hub
                 try:
-                    filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=10.0)
+                    filters = await self.get_dialog_filters(client, max_age=300)
                     for f in filters:
                         fid = getattr(f, 'id', None)
                         ftitle = str(getattr(f, 'title', '')).lower()
@@ -1423,6 +1490,8 @@ class BotManager:
 
             self.dialogs_cache = None
             self.dialogs_cache_time = 0
+            self._dialog_filters_cache = None
+            self._dialog_filters_cache_time = 0
             return {"success": True, "chat_id": chat_id, "folder_id": folder_id}
         except Exception as e:
             err = str(e).encode("ascii", errors="ignore").decode("ascii")
@@ -1461,6 +1530,8 @@ class BotManager:
 
             self.dialogs_cache = None
             self.dialogs_cache_time = 0
+            self._dialog_filters_cache = None
+            self._dialog_filters_cache_time = 0
             return {"success": True, "chat_id": chat_id, "folder_id": folder_id}
         except Exception as e:
             err = str(e).encode("ascii", errors="ignore").decode("ascii")
@@ -1537,6 +1608,8 @@ class BotManager:
 
             self.dialogs_cache = None
             self.dialogs_cache_time = 0
+            self._dialog_filters_cache = None
+            self._dialog_filters_cache_time = 0
 
             return {
                 "success": True,
