@@ -552,14 +552,25 @@ async def remove_telegram_target(source_id: int):
 
 @app.post("/api/telegram/sync/{source_id}", dependencies=[Depends(verify_token)])
 async def sync_telegram_history(source_id: int):
-    if db_b is None:
-        raise HTTPException(status_code=500, detail="Cluster B not connected")
-    mapping = db_b.xDataChannels.find_one({"_id": source_id})
-    if not mapping:
-        mapping = db_b.xDataChannels.find_one({"_id": str(source_id)})
-    if not mapping:
-        raise HTTPException(status_code=404, detail="Mapping not found")
-    target_id = mapping.get("target")
+    target_id = None
+    if db_b is not None:
+        mapping = db_b.xDataChannels.find_one({"_id": source_id})
+        if not mapping:
+            mapping = db_b.xDataChannels.find_one({"_id": str(source_id)})
+        if mapping:
+            target_id = mapping.get("target")
+
+    # If not found in DB mappings, check Telegram Folders dynamically
+    if not target_id:
+        dialogs = await bot_manager.get_telegram_dialogs(bot_id="backup_forwarder")
+        for d in dialogs:
+            if d.get("id") == source_id:
+                target_id = d.get("target_id")
+                break
+
+    if not target_id:
+        raise HTTPException(status_code=404, detail="Target channel could not be determined. Please ensure the channel is inside videoDB (Folder 5) or TeraDB (Folder 6).")
+
     job = await bot_manager.start_bulk_forward_job(source_id=source_id, target_id=target_id)
     return job
 

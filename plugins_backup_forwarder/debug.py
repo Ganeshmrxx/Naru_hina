@@ -1,10 +1,48 @@
 # plugins/debug.py
 import asyncio
+import time
 import random as rnd
 from pymongo import MongoClient
 from pyrogram import Client, filters
 from pyrogram.enums import ChatType
 from pyrogram.errors import FloodWait, RPCError
+
+# Folder targets cache
+_folder_cache = {"time": 0, 5: set(), 6: set()}
+
+async def resolve_folder_target(client, incoming_id):
+    now = time.time()
+    if now - _folder_cache["time"] > 60:
+        try:
+            from pyrogram.raw.functions.messages import GetDialogFilters
+            filters = await client.invoke(GetDialogFilters())
+            _folder_cache[5] = set()
+            _folder_cache[6] = set()
+            for f in filters:
+                fid = getattr(f, 'id', None)
+                ftitle = str(getattr(f, 'title', '')).lower()
+                target_set = None
+                if fid == 5 or ('video' in ftitle and 'db' in ftitle):
+                    target_set = _folder_cache[5]
+                elif fid == 6 or ('tera' in ftitle and 'db' in ftitle):
+                    target_set = _folder_cache[6]
+                if target_set is not None:
+                    for p in getattr(f, 'include_peers', []):
+                        cid = getattr(p, 'channel_id', getattr(p, 'chat_id', None))
+                        if cid:
+                            clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
+                            target_set.add(int(f"-100{clean_cid}"))
+                            target_set.add(clean_cid)
+            _folder_cache["time"] = now
+        except Exception as e:
+            print("Folder filter fetch error:", e)
+
+    clean_id = int(str(incoming_id).replace("-100", "").replace("-", ""))
+    if incoming_id in _folder_cache[5] or clean_id in _folder_cache[5]:
+        return -1004401442087, "DBXVideos"
+    if incoming_id in _folder_cache[6] or clean_id in _folder_cache[6]:
+        return -1004337870091, "DBXTera"
+    return None, None
 
 # MongoDB Setup
 DATABASE_URI = "mongodb+srv://test:test05@cluster0.g05zxpa.mongodb.net/?retryWrites=true&w=majority"
@@ -274,33 +312,31 @@ async def auto_forward(client, message):
     print("incoming", incoming_id, "type", messageType, "channele name ", source_title)
 
     record = db["xDataChannels"].find_one({"_id": incoming_id})
+    target = None
+    tn = None
 
-    if not record:
+    if record:
+        target = record.get("target")
+        tn = record.get("target_name")
+    else:
+        target, tn = await resolve_folder_target(client, incoming_id)
+
+    if not target:
         if message.chat.type == ChatType.GROUP or message.chat.type == ChatType.SUPERGROUP:
-
             try:
                 db["xDataChannels"].insert_one({
                     "_id": incoming_id,
                     "source_name": source_title,
                     "target": -1003253102275,
                     "target_name": "Mix"
-
                 })
                 await client.send_message("@ganeshmrxx", f"⏳ new group...{source_title}, id {incoming_id}")
                 print("Saved mapping:", {source_title})
             except Exception as e:
-                print("Dagrroup ta group already mapping:", {incoming_id}, {source_title})
-        print("not found incoming channel in db")
+                print("Group already mapped:", {incoming_id})
         return
 
-    target = record["target"]
-    tn = record["target_name"]
-    print("target Channel ", {target}, "name ", tn)
-    try:
-        chat = await client.get_chat(target)
-        print("Bot can access:", chat.title)
-    except Exception as e:
-        print("Cannot access channel:", e)
+    print("Target Channel:", target, "Name:", tn)
 
     file_id = None
     duration = None
