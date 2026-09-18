@@ -13,8 +13,6 @@ const BOT_OPTIONS = [
   { id: 'all', label: 'All Bots' },
   { id: 'movie_forwarder', label: 'Movie Forwarder' },
   { id: 'terabox_modifier', label: 'TeraBox Modifier' },
-  { id: 'promoter_1', label: 'Promoter 1' },
-  { id: 'promoter_2', label: 'Promoter 2' },
   { id: 'backup_forwarder', label: 'Backup Forwarder' },
   { id: 'data_modifier', label: 'Data Modifier' },
 ];

@@ -22,7 +22,7 @@ const BOTS_INFO: Record<string, {
 }> = {
   movie_forwarder: {
     name: 'Movie Forwarder Bot',
-    session: 'Session 3 (userbot)',
+    session: 'Session 1 (userbot)',
     icon: Film,
     path: '/bots/movie-forwarder',
     desc: 'Monitors incoming channel posts and copies movies/documents >150MB to target archive.',
@@ -35,22 +35,6 @@ const BOTS_INFO: Record<string, {
     path: '/bots/terabox',
     desc: 'Bypasses and rewrites TeraBox links to playtera.in player, with search and auto-poster.',
     features: ['Link Rewriter & Bypasser', 'Inline Search Pagination', '30-Min Auto-Poster with History Clear']
-  },
-  promoter_1: {
-    name: 'Promoter Bot 1',
-    session: 'Session 3 / session_gen (userbot)',
-    icon: Megaphone,
-    path: '/bots/promoter-1',
-    desc: 'Automated 3-step drip conversion funnel for private DMs and periodic group broadcasting.',
-    features: ['3-Stage Private DM Funnel', 'Periodic Group Message Broadcaster', 'Auto-Admin Elevation for @ganeshmrxx']
-  },
-  promoter_2: {
-    name: 'Promoter Bot 2',
-    session: 'Session 4 / x2 (userbot)',
-    icon: Megaphone,
-    path: '/bots/promoter-2',
-    desc: 'High-volume parallel userbot account executing identical promotional funnels.',
-    features: ['Independent Session4 Credentials', 'Group Spam Broadcaster', 'Auto-Admin Elevation']
   },
   backup_forwarder: {
     name: 'Backup Forwarder Bot',

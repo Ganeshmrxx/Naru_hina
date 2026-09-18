@@ -24,16 +24,6 @@ const BOT_METADATA: Record<string, { name: string; path: string; desc: string }>
     path: '/bots/terabox',
     desc: 'Rewrites TeraBox URLs & auto-posts videos'
   },
-  promoter_1: {
-    name: 'Promoter Bot 1',
-    path: '/bots/promoter-1',
-    desc: 'DM funnel & periodic group broadcasting'
-  },
-  promoter_2: {
-    name: 'Promoter Bot 2',
-    path: '/bots/promoter-2',
-    desc: 'DM funnel & group broadcasting (Session4)'
-  },
   backup_forwarder: {
     name: 'Backup Forwarder',
     path: '/bots/backup-forwarder',
@@ -146,7 +136,7 @@ export default function DashboardPage() {
   if (loading) return <LoadingState message="Loading dashboard & bot statuses..." />;
 
   const runningBotsCount = bots ? Object.values(bots).filter((b) => b.is_running).length : 0;
-  const totalBotsCount = bots ? Object.keys(bots).length : 6;
+  const totalBotsCount = bots ? Object.keys(bots).length : 4;
   const totalMedia = (stats?.total_media as number) ?? 0;
   const videosCount = (stats?.videos as number) ?? 0;
   const photosCount = (stats?.photos as number) ?? 0;
