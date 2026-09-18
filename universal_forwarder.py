@@ -427,11 +427,20 @@ class UniversalForwarder:
 
         # 2. Start Userbot Client
         print("\n[1/2] Connecting Userbot (SESSION2)...", flush=True)
+        session_to_use = Config.SESSION2
+        try:
+            doc = db["bot_sessions"].find_one({"_id": "SESSION2"})
+            if doc and doc.get("session_string"):
+                session_to_use = doc["session_string"].strip()
+                print("   [SESSION] Loaded latest SESSION2 from MongoDB bot_sessions", flush=True)
+        except Exception:
+            pass
+
         self.user_app = Client(
             "userbot_session",
             api_id=Config.API_ID2,
             api_hash=Config.API_HASH2,
-            session_string=Config.SESSION2,
+            session_string=session_to_use,
             in_memory=True
         )
         await self.user_app.start()

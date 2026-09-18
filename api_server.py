@@ -123,6 +123,19 @@ async def startup_event():
         err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
         print(f"Error connecting to MongoDB Cluster B: {err_msg}")
 
+    # Load any updated sessions from MongoDB Cluster A
+    if db_a is not None:
+        try:
+            for s_key in ["SESSION1", "SESSION2"]:
+                s_doc = db_a.bot_sessions.find_one({"_id": s_key})
+                if s_doc and s_doc.get("session_string"):
+                    val = s_doc["session_string"].strip()
+                    os.environ[s_key] = val
+                    setattr(Config, s_key, val)
+                    print(f"Loaded {s_key} from MongoDB bot_sessions")
+        except Exception as se:
+            print(f"Error loading bot_sessions from MongoDB: {se}")
+
     # Start heartbeat and default bots
     bot_manager.start_heartbeat()
     await bot_manager.start_all()
@@ -741,7 +754,24 @@ async def apply_telegram_session(req: ApplySessionRequest):
     except Exception as e:
         print(f"Warning: Failed to persist session to config.py: {e}")
         
-    # 3. Restart target bot with fresh session
+    # 3. Persist to MongoDB Cluster A (bot_sessions collection) for permanent cloud backup
+    if db_a is not None:
+        try:
+            db_a.bot_sessions.update_one(
+                {"_id": session_key},
+                {"$set": {
+                    "_id": session_key,
+                    "target_bot": bot_id,
+                    "session_string": new_session,
+                    "updated_at": datetime.now()
+                }},
+                upsert=True
+            )
+            print(f"Persisted {session_key} to MongoDB bot_sessions")
+        except Exception as me:
+            print(f"Warning: Failed to persist session to MongoDB: {me}")
+
+    # 4. Restart target bot with fresh session
     restart_res = await bot_manager.restart_bot(bot_id)
     
     return {
