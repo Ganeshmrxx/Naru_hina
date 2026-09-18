@@ -86,14 +86,14 @@ async def main():
     videos_db1 = videos_db[:100]
     videos_db2 = videos_db[100:200]
     
-    # 2. Define folders to create
+    # Define the 3 folders requested by user
+    all_terabox = terabox_links + restricted_terabox
+    all_videos = (videos_db + restricted_video)[:100]
+    
     folders_to_setup = [
-        {"id": 4, "title": "🎯 Target Hub", "emoticon": "🎯", "chats": target_hub},
-        {"id": 5, "title": "🎥 Videos DB1", "emoticon": "🎬", "chats": videos_db1},
-        {"id": 9, "title": "🎥 Videos DB2", "emoticon": "🎬", "chats": videos_db2},
-        {"id": 6, "title": "📦 TeraBox", "emoticon": "📦", "chats": terabox_links},
-        {"id": 7, "title": "🔒 R-Videos", "emoticon": "🔒", "chats": restricted_video},
-        {"id": 8, "title": "🔒 R-TeraBox", "emoticon": "📁", "chats": restricted_terabox},
+        {"id": 4, "title": "target HUB", "emoticon": "🎯", "chats": target_hub},
+        {"id": 5, "title": "videoDB", "emoticon": "🎥", "chats": all_videos},
+        {"id": 6, "title": "TeraDB", "emoticon": "📦", "chats": all_terabox},
     ]
     
     # 3. Resolve peers and create each folder
