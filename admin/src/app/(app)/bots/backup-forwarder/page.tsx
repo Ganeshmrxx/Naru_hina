@@ -375,7 +375,7 @@ export default function BackupForwarderDetailPage() {
               Automatic Telegram Folder Routing Active (3 Target Folders)
             </h4>
             <p className="text-[11px] text-gray-400 mt-0.5">
-              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Channels in <strong className="text-teal-300">public hub (Folder 4)</strong> route to <strong className="text-teal-400">public hub</strong>.
+              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Channels in <strong className="text-teal-300">TARGEThub (Folder 4)</strong> route to <strong className="text-teal-400">TARGEThub</strong>.
             </p>
           </div>
         </div>
@@ -426,14 +426,14 @@ export default function BackupForwarderDetailPage() {
 
         <div className="bg-[#111827] border border-teal-500/30 rounded-xl p-3.5 bg-teal-950/10">
           <div className="flex items-center justify-between">
-            <p className="text-xs text-teal-300 font-medium">public hub (Folder 4)</p>
+            <p className="text-xs text-teal-300 font-medium">TARGEThub (Folder 4)</p>
             <Globe className="w-3.5 h-3.5 text-teal-400" />
           </div>
           <div className="flex items-baseline gap-2 mt-1">
             <span className="text-xl font-mono font-bold text-teal-400">{publicHubCount}</span>
-            <span className="text-[10px] text-gray-400">➔ public hub</span>
+            <span className="text-[10px] text-gray-400">➔ TARGEThub</span>
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">Folder: public hub</p>
+          <p className="text-[11px] text-gray-500 mt-1">Folder: TARGEThub</p>
         </div>
 
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-3.5">
@@ -529,7 +529,7 @@ export default function BackupForwarderDetailPage() {
               }`}
             >
               <Globe className="w-3 h-3" />
-              public hub ({publicHubCount})
+              TARGEThub ({publicHubCount})
             </button>
 
             <button
@@ -724,14 +724,14 @@ export default function BackupForwarderDetailPage() {
                         </button>
                       </div>
                     ) : isFolder4 ? (
-                      /* public hub (Folder 4) Active State */
+                      /* TARGEThub (Folder 4) Active State */
                       <div className="flex items-center gap-2 flex-wrap justify-end">
                         <div className="bg-[#111827] border border-teal-500/40 rounded-lg px-3 py-1.5 text-xs text-left">
                           <div className="flex items-center gap-1.5 text-teal-400 font-medium">
                             <span className="w-2 h-2 rounded-full bg-teal-400 animate-pulse" />
-                            🌐 public hub
+                            🎯 TARGEThub
                           </div>
-                          <div className="text-[11px] text-gray-400">Folder: public hub</div>
+                          <div className="text-[11px] text-gray-400">Folder: TARGEThub</div>
                         </div>
 
                         <button
@@ -744,9 +744,9 @@ export default function BackupForwarderDetailPage() {
                         </button>
 
                         <button
-                          onClick={() => handleRemoveFolder(channel.id, 4, 'public hub')}
+                          onClick={() => handleRemoveFolder(channel.id, 4, 'TARGEThub')}
                           disabled={isBusy}
-                          title="Remove from public hub folder"
+                          title="Remove from TARGEThub folder"
                           className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs font-medium transition-colors disabled:opacity-50"
                         >
                           <MinusCircle className="w-3.5 h-3.5" />
@@ -754,7 +754,7 @@ export default function BackupForwarderDetailPage() {
                         </button>
                       </div>
                     ) : (
-                      /* Unassigned Channel: Quick 1-Click Assign to videoDB, TeraDB, or public hub */
+                      /* Unassigned Channel: Quick 1-Click Assign to videoDB, TeraDB, or TARGEThub */
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-[11px] text-gray-500 italic mr-1">Not in folder:</span>
                         <button
@@ -776,12 +776,12 @@ export default function BackupForwarderDetailPage() {
                         </button>
 
                         <button
-                          onClick={() => handleAssignFolder(channel.id, 4, 'public hub')}
+                          onClick={() => handleAssignFolder(channel.id, 4, 'TARGEThub')}
                           disabled={isBusy}
                           className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-teal-600/20 hover:bg-teal-600 text-teal-300 hover:text-white border border-teal-500/30 text-xs font-medium transition-colors disabled:opacity-50"
                         >
                           <Plus className="w-3.5 h-3.5" />
-                          <span>+ public hub</span>
+                          <span>+ TARGEThub</span>
                         </button>
                       </div>
                     )}

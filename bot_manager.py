@@ -448,7 +448,7 @@ class BotManager:
                             target_set = folder_5_channels
                         elif fid == 6 or ('tera' in ftitle and 'db' in ftitle):
                             target_set = folder_6_channels
-                        elif fid == 4 or 'public' in ftitle or 'hub' in ftitle:
+                        elif fid == 4 or 'target' in ftitle or 'public' in ftitle or 'hub' in ftitle:
                             target_set = folder_4_channels
 
                         if target_set is not None:
@@ -496,9 +496,9 @@ class BotManager:
                         is_mapped = True
                     elif chat.id in folder_4_channels or clean_id in folder_4_channels:
                         folder_id = 4
-                        folder_name = "public hub"
+                        folder_name = "TARGEThub"
                         target_id = None
-                        target_name = "public hub"
+                        target_name = "TARGEThub"
                         is_mapped = True
                     else:
                         folder_id = None
@@ -761,12 +761,12 @@ class BotManager:
                     continue
                 ftitle = str(getattr(f, "title", "")).strip().lower()
 
-                # Allowed folders: videoDB (5), TeraDB (6), public hub (4)
+                # Allowed folders: videoDB (5), TeraDB (6), TARGEThub (4)
                 is_videodb = ("video" in ftitle and "db" in ftitle) or fid == 5
                 is_teradb = ("tera" in ftitle and "db" in ftitle) or fid == 6
-                is_publichub = "public" in ftitle or "hub" in ftitle or fid == 4
+                is_targethub = "target" in ftitle or "public" in ftitle or "hub" in ftitle or fid == 4
 
-                if is_videodb or is_teradb or is_publichub:
+                if is_videodb or is_teradb or is_targethub:
                     kept.append({"id": fid, "title": getattr(f, "title", "")})
                 else:
                     # Extra folder -> delete from Telegram!
@@ -777,13 +777,13 @@ class BotManager:
                     except Exception as de:
                         logging.warning(f"Error deleting extra folder {fid}: {de}")
 
-            # Ensure public hub exists if not present
-            has_publichub = any("public" in k["title"].lower() or "hub" in k["title"].lower() or k["id"] == 4 for k in kept)
-            if not has_publichub:
+            # Ensure TARGEThub exists if not present
+            has_targethub = any("target" in k["title"].lower() or "hub" in k["title"].lower() or k["id"] == 4 for k in kept)
+            if not has_targethub:
                 pub_filter = DialogFilter(
                     id=4,
-                    title="public hub",
-                    emoticon="🌐",
+                    title="TARGEThub",
+                    emoticon="🎯",
                     pinned_peers=[],
                     include_peers=[],
                     exclude_peers=[],
@@ -793,9 +793,9 @@ class BotManager:
                 )
                 try:
                     await client.invoke(UpdateDialogFilter(id=4, filter=pub_filter))
-                    kept.append({"id": 4, "title": "public hub"})
+                    kept.append({"id": 4, "title": "TARGEThub"})
                 except Exception as ce:
-                    logging.warning(f"Error creating public hub folder: {ce}")
+                    logging.warning(f"Error creating TARGEThub folder: {ce}")
 
             self.dialogs_cache = None
             self.dialogs_cache_time = 0
