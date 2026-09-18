@@ -127,6 +127,48 @@ class BotManager:
         self.db_b = None
         self._heartbeat_task = None
         self._auto_folder_sync_task = None
+        self._forward_lock = asyncio.Lock()
+        self.worker_bots = []
+        self.worker_bots_initialized = False
+        self.worker_bot_idx = 0
+        self.worker_bot_counter = 0
+
+    async def _init_worker_bots_if_needed(self):
+        """Initializes worker bots pool on-demand for public channel copying."""
+        if self.worker_bots_initialized:
+            return
+        try:
+            from config import Config
+            from pyrogram import Client
+            logging.info(f"[WORKER POOL] Initializing {len(Config.BOT_WORKERS)} Worker Bots...")
+            for idx, token in enumerate(Config.BOT_WORKERS):
+                try:
+                    wb = Client(
+                        f"botmgr_worker_{idx+1}",
+                        api_id=Config.API_ID2,
+                        api_hash=Config.API_HASH2,
+                        bot_token=token,
+                        in_memory=True
+                    )
+                    await wb.start()
+                    self.worker_bots.append(wb)
+                except Exception as e:
+                    logging.warning(f"[WORKER POOL] Worker bot {idx+1} start failed: {e}")
+            self.worker_bots_initialized = True
+            logging.info(f"[WORKER POOL] Ready with {len(self.worker_bots)} active worker bots.")
+        except Exception as e:
+            logging.error(f"[WORKER POOL] Initialization error: {e}")
+
+    def _get_next_worker_bot(self):
+        """Rotates through worker bots pool, switching bot every 10 messages."""
+        if not getattr(self, "worker_bots", []):
+            return None
+        bot = self.worker_bots[self.worker_bot_idx]
+        self.worker_bot_counter += 1
+        if self.worker_bot_counter >= 10:
+            self.worker_bot_counter = 0
+            self.worker_bot_idx = (self.worker_bot_idx + 1) % len(self.worker_bots)
+        return bot
 
     def set_databases(self, db_a, db_b):
         self.db_a = db_a
@@ -359,112 +401,163 @@ class BotManager:
 
     async def _execute_bulk_forward(self, job_id: str, source_id: int, target_id: int, from_msg_id: int, to_msg_id: int):
         job = self.forward_jobs[job_id]
-        # Use backup_forwarder instance if connected, else promoter or movie forwarder
-        client = None
-        for b_id in ["backup_forwarder", "promoter_1", "promoter_2", "movie_forwarder"]:
-            inst = self.bots[b_id].get("instance")
-            if inst and getattr(inst, "is_connected", False):
-                client = inst
-                break
-
-        if client is None:
-            # Need to start backup_forwarder temporarily or fail
-            res = await self.start_bot("backup_forwarder")
-            await asyncio.sleep(3)
-            client = self.bots["backup_forwarder"].get("instance")
-            if client is None or not getattr(client, "is_connected", False):
-                job["status"] = "failed"
-                job["error"] = "No connected client available to execute forward job"
-                return
-
+        job["status"] = "queued"
         self.folder_sync_status[source_id] = {
-            "status": "syncing",
+            "status": "queued",
             "processed": 0,
             "target_id": target_id,
             "job_id": job_id
         }
 
-        try:
-            async for msg in client.get_chat_history(source_id, offset_id=from_msg_id if from_msg_id > 0 else 0):
-                if job["status"] == "stopped":
+        # Acquire lock so only ONE channel's past messages are copied at a time
+        async with self._forward_lock:
+            job["status"] = "running"
+            self.folder_sync_status[source_id]["status"] = "syncing"
+
+            # Use backup_forwarder instance if connected, else promoter or movie forwarder
+            client = None
+            for b_id in ["backup_forwarder", "promoter_1", "promoter_2", "movie_forwarder"]:
+                inst = self.bots[b_id].get("instance")
+                if inst and getattr(inst, "is_connected", False):
+                    client = inst
                     break
-                
-                job["last_activity"] = datetime.now().isoformat()
-                job["current_msg_id"] = msg.id
 
-                if to_msg_id > 0 and msg.id > to_msg_id:
-                    continue
+            if client is None:
+                # Need to start backup_forwarder temporarily or fail
+                res = await self.start_bot("backup_forwarder")
+                await asyncio.sleep(3)
+                client = self.bots["backup_forwarder"].get("instance")
+                if client is None or not getattr(client, "is_connected", False):
+                    job["status"] = "failed"
+                    job["error"] = "No connected client available to execute forward job"
+                    self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
+                    return
 
-                if msg.video or msg.photo or msg.document:
-                    file_id = None
-                    if msg.video:
-                        file_id = getattr(msg.video, 'file_unique_id', None)
-                    elif msg.photo:
-                        file_id = getattr(msg.photo, 'file_unique_id', None)
-                    elif msg.document:
-                        file_id = getattr(msg.document, 'file_unique_id', None)
+            # Determine if source channel is Public (has username) or Private
+            is_public = False
+            source_username = None
+            try:
+                c_info = await client.get_chat(source_id)
+                source_username = getattr(c_info, "username", None)
+                if source_username:
+                    is_public = True
+            except Exception as ce:
+                logging.warning(f"[BULK FORWARD] Could not determine username for {source_id}: {ce}")
 
-                    # Check duplicate in Cluster B xData
-                    if file_id and self.db_b is not None:
-                        try:
-                            if self.db_b["xData"].find_one({"_id": file_id}):
-                                job["skipped"] += 1
-                                continue
-                        except Exception:
-                            pass
+            if is_public:
+                await self._init_worker_bots_if_needed()
+                logging.info(f"[BULK FORWARD] Channel {source_id} (@{source_username}) is PUBLIC -> Using 12 Worker Bots pool (rotating every 10 msgs).")
+            else:
+                logging.info(f"[BULK FORWARD] Channel {source_id} is PRIVATE -> Using Userbot (backup_forwarder).")
 
-                    try:
-                        copied_msg = await msg.copy(chat_id=target_id)
-                        job["processed"] += 1
-                        self.folder_sync_status[source_id]["processed"] = job["processed"]
+            try:
+                async for msg in client.get_chat_history(source_id, offset_id=from_msg_id if from_msg_id > 0 else 0):
+                    if job["status"] == "stopped":
+                        break
+                    
+                    job["last_activity"] = datetime.now().isoformat()
+                    job["current_msg_id"] = msg.id
 
+                    if to_msg_id > 0 and msg.id > to_msg_id:
+                        continue
+
+                    # Rule: Single photos are skipped (only videos or album media groups copied)
+                    if msg.photo and not getattr(msg, "media_group_id", None):
+                        job["skipped"] += 1
+                        continue
+
+                    if msg.video or msg.document or (msg.photo and getattr(msg, "media_group_id", None)):
+                        file_id = None
+                        if msg.video:
+                            file_id = getattr(msg.video, 'file_unique_id', None)
+                        elif msg.photo:
+                            file_id = getattr(msg.photo, 'file_unique_id', None)
+                        elif msg.document:
+                            file_id = getattr(msg.document, 'file_unique_id', None)
+
+                        # Check duplicate in Cluster B xData
                         if file_id and self.db_b is not None:
                             try:
-                                self.db_b["xData"].insert_one({
-                                    "_id": file_id,
-                                    "channel_id": target_id,
-                                    "source_id": source_id,
-                                    "message_id": getattr(copied_msg, "id", None),
-                                    "copied_at": datetime.now().isoformat()
-                                })
+                                if self.db_b["xData"].find_one({"_id": file_id}):
+                                    job["skipped"] += 1
+                                    continue
                             except Exception:
                                 pass
 
-                        await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
-                    except Exception as copy_err:
-                        job["failed"] += 1
-                        err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
-                        if "FloodWait" in err_str:
-                            await asyncio.sleep(15)
-                else:
-                    job["skipped"] += 1
+                        try:
+                            copied_msg = None
+                            if is_public and self.worker_bots:
+                                worker_bot = self._get_next_worker_bot()
+                                try:
+                                    copied_msg = await worker_bot.copy_message(
+                                        chat_id=target_id,
+                                        from_chat_id=source_username,
+                                        message_id=msg.id
+                                    )
+                                except Exception as wb_err:
+                                    logging.warning(f"[WORKER ERR] Worker copy failed ({wb_err}), fallback to Userbot...")
+                                    copied_msg = await client.copy_message(
+                                        chat_id=target_id,
+                                        from_chat_id=source_id,
+                                        message_id=msg.id
+                                    )
+                            else:
+                                copied_msg = await client.copy_message(
+                                    chat_id=target_id,
+                                    from_chat_id=source_id,
+                                    message_id=msg.id
+                                )
 
-            if job["status"] != "stopped":
-                job["status"] = "completed"
-                self.folder_sync_status[source_id] = {
-                    "status": "completed",
-                    "processed": job["processed"],
-                    "completed_at": datetime.now().isoformat()
-                }
-                if self.db_a is not None:
-                    try:
-                        self.db_a.forward_progress.update_one(
-                            {"chat_id": source_id},
-                            {"$set": {
-                                "chat_id": source_id,
-                                "status": "completed",
-                                "total_copied": job["processed"],
-                                "target_id": target_id,
-                                "updated_at": datetime.now()
-                            }},
-                            upsert=True
-                        )
-                    except Exception:
-                        pass
-        except Exception as e:
-            job["status"] = "failed"
-            job["error"] = str(e).encode("ascii", errors="ignore").decode("ascii")
-            self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
+                            job["processed"] += 1
+                            self.folder_sync_status[source_id]["processed"] = job["processed"]
+
+                            if file_id and self.db_b is not None:
+                                try:
+                                    self.db_b["xData"].insert_one({
+                                        "_id": file_id,
+                                        "channel_id": target_id,
+                                        "source_id": source_id,
+                                        "message_id": getattr(copied_msg, "id", None),
+                                        "copied_at": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
+
+                            await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
+                        except Exception as copy_err:
+                            job["failed"] += 1
+                            err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
+                            if "FloodWait" in err_str:
+                                await asyncio.sleep(15)
+                    else:
+                        job["skipped"] += 1
+
+                if job["status"] != "stopped":
+                    job["status"] = "completed"
+                    self.folder_sync_status[source_id] = {
+                        "status": "completed",
+                        "processed": job["processed"],
+                        "completed_at": datetime.now().isoformat()
+                    }
+                    if self.db_a is not None:
+                        try:
+                            self.db_a.forward_progress.update_one(
+                                {"chat_id": source_id},
+                                {"$set": {
+                                    "chat_id": source_id,
+                                    "status": "completed",
+                                    "total_copied": job["processed"],
+                                    "target_id": target_id,
+                                    "updated_at": datetime.now()
+                                }},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+            except Exception as e:
+                job["status"] = "failed"
+                job["error"] = str(e).encode("ascii", errors="ignore").decode("ascii")
+                self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
 
     async def _auto_folder_sync_runner(self):
         """Background worker: Automatically syncs past media from all channels in videoDB & TeraDB."""
@@ -472,8 +565,8 @@ class BotManager:
         await asyncio.sleep(20)  # Wait for startup
         while True:
             try:
-                # Check if a bulk forward job is already currently running
-                any_running = any(j.get("status") == "running" for j in self.forward_jobs.values())
+                # Check if a bulk forward job is already currently running or queued
+                any_running = any(j.get("status") in ["running", "queued"] for j in self.forward_jobs.values())
                 if not any_running:
                     client = self.bots["backup_forwarder"].get("instance")
                     if client and getattr(client, "is_connected", False):
