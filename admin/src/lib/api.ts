@@ -317,6 +317,18 @@ class ApiClient {
     });
   }
 
+  async cleanupTelegramFoldersToThree() {
+    return this.request<{
+      success: boolean;
+      kept_folders: Array<{ id: number; title: string }>;
+      deleted_folders: Array<{ id: number; title: string }>;
+      message: string;
+      error?: string;
+    }>('/api/telegram/folders/cleanup-to-three', {
+      method: 'POST',
+    });
+  }
+
 
 
   // Telegram Live Media & Folders

@@ -437,22 +437,28 @@ class BotManager:
                 # Fetch Telegram folders (dialog filters) to determine target channel
                 folder_5_channels = set()  # videoDB -> DBXVideos (-1004401442087)
                 folder_6_channels = set()  # TeraDB -> DBXTera (-1004337870091)
+                folder_4_channels = set()  # public hub
                 try:
                     filters = await client.invoke(GetDialogFilters())
                     for f in filters:
                         fid = getattr(f, 'id', None)
-                        if fid in [5, 6]:
+                        ftitle = str(getattr(f, 'title', '')).lower()
+                        target_set = None
+                        if fid == 5 or ('video' in ftitle and 'db' in ftitle):
+                            target_set = folder_5_channels
+                        elif fid == 6 or ('tera' in ftitle and 'db' in ftitle):
+                            target_set = folder_6_channels
+                        elif fid == 4 or 'public' in ftitle or 'hub' in ftitle:
+                            target_set = folder_4_channels
+
+                        if target_set is not None:
                             for p in getattr(f, 'include_peers', []):
                                 cid = getattr(p, 'channel_id', getattr(p, 'chat_id', None))
                                 if cid:
                                     clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
                                     full_cid = int(f"-100{clean_cid}")
-                                    if fid == 5:
-                                        folder_5_channels.add(full_cid)
-                                        folder_5_channels.add(clean_cid)
-                                    elif fid == 6:
-                                        folder_6_channels.add(full_cid)
-                                        folder_6_channels.add(clean_cid)
+                                    target_set.add(full_cid)
+                                    target_set.add(clean_cid)
                 except Exception as fe:
                     logging.warning(f"Could not fetch dialog filters: {fe}")
 
@@ -487,6 +493,12 @@ class BotManager:
                         folder_name = "TeraDB"
                         target_id = -1004337870091
                         target_name = "DBXTera"
+                        is_mapped = True
+                    elif chat.id in folder_4_channels or clean_id in folder_4_channels:
+                        folder_id = 4
+                        folder_name = "public hub"
+                        target_id = None
+                        target_name = "public hub"
                         is_mapped = True
                     else:
                         folder_id = None
@@ -724,6 +736,79 @@ class BotManager:
         self.dialogs_cache = None
         self.dialogs_cache_time = 0
         return {"success": True, "deleted_count": deleted}
+
+    async def cleanup_telegram_folders_to_three(self) -> dict:
+        """Deletes all extra folders from Telegram and keeps ONLY videoDB, TeraDB, and public hub."""
+        bot_entry = self.bots.get("backup_forwarder")
+        client = bot_entry.get("instance") if bot_entry else None
+        if not client or not getattr(client, "is_connected", False):
+            if "backup_forwarder" in self.bots:
+                await self.start_bot("backup_forwarder")
+                await asyncio.sleep(2)
+                bot_entry = self.bots.get("backup_forwarder")
+                client = bot_entry.get("instance") if bot_entry else None
+            if not client:
+                return {"success": False, "error": "Backup Forwarder userbot is not connected"}
+
+        try:
+            filters = await client.invoke(GetDialogFilters())
+            kept = []
+            deleted = []
+
+            for f in filters:
+                fid = getattr(f, "id", None)
+                if fid is None:
+                    continue
+                ftitle = str(getattr(f, "title", "")).strip().lower()
+
+                # Allowed folders: videoDB (5), TeraDB (6), public hub (4)
+                is_videodb = ("video" in ftitle and "db" in ftitle) or fid == 5
+                is_teradb = ("tera" in ftitle and "db" in ftitle) or fid == 6
+                is_publichub = "public" in ftitle or "hub" in ftitle or fid == 4
+
+                if is_videodb or is_teradb or is_publichub:
+                    kept.append({"id": fid, "title": getattr(f, "title", "")})
+                else:
+                    # Extra folder -> delete from Telegram!
+                    try:
+                        await client.invoke(UpdateDialogFilter(id=fid, filter=None))
+                        deleted.append({"id": fid, "title": getattr(f, "title", "")})
+                        logging.info(f"Deleted extra Telegram folder: {getattr(f, 'title', '')} (ID: {fid})")
+                    except Exception as de:
+                        logging.warning(f"Error deleting extra folder {fid}: {de}")
+
+            # Ensure public hub exists if not present
+            has_publichub = any("public" in k["title"].lower() or "hub" in k["title"].lower() or k["id"] == 4 for k in kept)
+            if not has_publichub:
+                pub_filter = DialogFilter(
+                    id=4,
+                    title="public hub",
+                    emoticon="🌐",
+                    pinned_peers=[],
+                    include_peers=[],
+                    exclude_peers=[],
+                    exclude_muted=False,
+                    exclude_read=False,
+                    exclude_archived=False
+                )
+                try:
+                    await client.invoke(UpdateDialogFilter(id=4, filter=pub_filter))
+                    kept.append({"id": 4, "title": "public hub"})
+                except Exception as ce:
+                    logging.warning(f"Error creating public hub folder: {ce}")
+
+            self.dialogs_cache = None
+            self.dialogs_cache_time = 0
+
+            return {
+                "success": True,
+                "kept_folders": kept,
+                "deleted_folders": deleted,
+                "message": f"Kept {len(kept)} folders (videoDB, TeraDB, public hub). Deleted {len(deleted)} extra folders."
+            }
+        except Exception as e:
+            err = str(e).encode("ascii", errors="ignore").decode("ascii")
+            return {"success": False, "error": err}
 
 
 

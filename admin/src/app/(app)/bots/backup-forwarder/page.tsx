@@ -6,7 +6,7 @@ import {
   HardDrive, Play, Square, RotateCw, RefreshCw, ArrowLeft,
   Plus, CheckCircle2, ShieldCheck, ScrollText, Radio,
   Search, Users, Trash2, Folder, Film, Database,
-  ArrowRight, Zap, Crown, Check, X, Sparkles, FolderCheck, MinusCircle
+  ArrowRight, Zap, Crown, Check, X, Sparkles, FolderCheck, MinusCircle, Globe
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -52,7 +52,7 @@ export default function BackupForwarderDetailPage() {
 
   // Search & Filter state - Default to 'live' to show real-time active channels
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'videodb' | 'teradb' | 'unassigned' | 'admin' | 'all'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'videodb' | 'teradb' | 'publichub' | 'unassigned' | 'admin' | 'all'>('live');
 
   // Bot Stop/Restart Confirm state
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -60,6 +60,7 @@ export default function BackupForwarderDetailPage() {
 
   // Clear legacy mappings state
   const [clearingLegacy, setClearingLegacy] = useState(false);
+  const [cleaningFolders, setCleaningFolders] = useState(false);
 
   // Load all data
   const fetchData = async (forceRefreshTelegram: boolean = false) => {
@@ -159,13 +160,14 @@ export default function BackupForwarderDetailPage() {
 
 
 
-  // Assign channel to a Telegram Folder (Folder 5 videoDB or Folder 6 TeraDB)
+  // Assign channel to a Telegram Folder (Folder 5 videoDB, Folder 6 TeraDB, or Folder 4 public hub)
   const handleAssignFolder = async (chatId: number, folderId: number, folderName: string) => {
     setFolderActionLoading(chatId);
     try {
       const res = await api.addChannelToFolder(chatId, folderId);
       if (res.success) {
-        toast('success', `Added to ${folderName}! Target: ${folderId === 5 ? 'DBXVideos' : 'DBXTera'}`);
+        const targetDesc = folderId === 5 ? 'DBXVideos' : folderId === 6 ? 'DBXTera' : 'public hub';
+        toast('success', `Added to ${folderName}! Target: ${targetDesc}`);
         await fetchData(true);
       } else {
         toast('error', res.error || `Failed to add to ${folderName}`);
@@ -195,6 +197,24 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
+  // Clean extra folders and keep only videoDB, TeraDB, and public hub
+  const handleCleanupFolders = async () => {
+    setCleaningFolders(true);
+    try {
+      const res = await api.cleanupTelegramFoldersToThree();
+      if (res.success) {
+        toast('success', res.message || 'Kept videoDB, TeraDB, and public hub! Removed extra folders.');
+        await fetchData(true);
+      } else {
+        toast('error', res.error || 'Failed to cleanup folders');
+      }
+    } catch (e: unknown) {
+      toast('error', e instanceof Error ? e.message : 'Failed to cleanup folders');
+    } finally {
+      setCleaningFolders(false);
+    }
+  };
+
   // Clear all old database mappings
   const handleClearLegacyMappings = async () => {
     setClearingLegacy(true);
@@ -213,6 +233,7 @@ export default function BackupForwarderDetailPage() {
   const liveCount = useMemo(() => dialogs.filter((d) => d.is_live !== false).length, [dialogs]);
   const videoDBCount = useMemo(() => dialogs.filter((d) => d.folder_id === 5 && d.is_live !== false).length, [dialogs]);
   const teraDBCount = useMemo(() => dialogs.filter((d) => d.folder_id === 6 && d.is_live !== false).length, [dialogs]);
+  const publicHubCount = useMemo(() => dialogs.filter((d) => d.folder_id === 4 && d.is_live !== false).length, [dialogs]);
   const unassignedCount = useMemo(() => dialogs.filter((d) => !d.folder_id && d.is_live !== false).length, [dialogs]);
   const adminCount = useMemo(() => dialogs.filter((d) => d.is_admin && d.is_live !== false).length, [dialogs]);
 
@@ -223,6 +244,7 @@ export default function BackupForwarderDetailPage() {
       if (activeTab === 'live' && d.is_live === false) return false;
       if (activeTab === 'videodb' && (d.folder_id !== 5 || d.is_live === false)) return false;
       if (activeTab === 'teradb' && (d.folder_id !== 6 || d.is_live === false)) return false;
+      if (activeTab === 'publichub' && (d.folder_id !== 4 || d.is_live === false)) return false;
       if (activeTab === 'unassigned' && (d.folder_id || d.is_live === false)) return false;
       if (activeTab === 'admin' && (!d.is_admin || d.is_live === false)) return false;
 
@@ -320,7 +342,15 @@ export default function BackupForwarderDetailPage() {
             <span>Live Telegram Sync</span>
           </button>
 
-
+          <button
+            onClick={handleCleanupFolders}
+            disabled={cleaningFolders}
+            title="Keep only videoDB, TeraDB, and public hub. Delete all other Telegram folders."
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-teal-500/10 border border-teal-500/30 text-teal-300 hover:bg-teal-500/20 text-xs font-medium transition-colors disabled:opacity-50"
+          >
+            <FolderCheck className={`w-3.5 h-3.5 ${cleaningFolders ? 'animate-spin' : ''}`} />
+            <span>{cleaningFolders ? 'Cleaning...' : 'Clean Extra Folders (Keep 3)'}</span>
+          </button>
 
           <button
             onClick={handleClearLegacyMappings}
@@ -342,10 +372,10 @@ export default function BackupForwarderDetailPage() {
           </div>
           <div>
             <h4 className="text-xs font-semibold text-white">
-              Automatic Telegram Folder Routing Active
+              Automatic Telegram Folder Routing Active (3 Target Folders)
             </h4>
             <p className="text-[11px] text-gray-400 mt-0.5">
-              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Old database mappings are disabled.
+              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Channels in <strong className="text-teal-300">public hub (Folder 4)</strong> route to <strong className="text-teal-400">public hub</strong>.
             </p>
           </div>
         </div>
@@ -360,17 +390,17 @@ export default function BackupForwarderDetailPage() {
       </div>
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-3.5">
           <p className="text-xs text-gray-400">Total Live Channels</p>
           <div className="flex items-baseline gap-2 mt-1">
             <span className="text-xl font-mono font-bold text-white">{liveCount}</span>
             <span className="text-[10px] text-emerald-400 font-medium">Real-Time</span>
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">Active in Telegram account</p>
+          <p className="text-[11px] text-gray-500 mt-1">Active in Telegram</p>
         </div>
 
-        <div className="bg-[#111827] border border-blue-500/30 rounded-xl p-4 bg-blue-950/10">
+        <div className="bg-[#111827] border border-blue-500/30 rounded-xl p-3.5 bg-blue-950/10">
           <div className="flex items-center justify-between">
             <p className="text-xs text-blue-300 font-medium">videoDB (Folder 5)</p>
             <Film className="w-3.5 h-3.5 text-blue-400" />
@@ -382,7 +412,7 @@ export default function BackupForwarderDetailPage() {
           <p className="text-[11px] text-gray-500 mt-1">Target: -1004401442087</p>
         </div>
 
-        <div className="bg-[#111827] border border-amber-500/30 rounded-xl p-4 bg-amber-950/10">
+        <div className="bg-[#111827] border border-amber-500/30 rounded-xl p-3.5 bg-amber-950/10">
           <div className="flex items-center justify-between">
             <p className="text-xs text-amber-300 font-medium">TeraDB (Folder 6)</p>
             <Database className="w-3.5 h-3.5 text-amber-400" />
@@ -394,16 +424,28 @@ export default function BackupForwarderDetailPage() {
           <p className="text-[11px] text-gray-500 mt-1">Target: -1004337870091</p>
         </div>
 
-        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+        <div className="bg-[#111827] border border-teal-500/30 rounded-xl p-3.5 bg-teal-950/10">
           <div className="flex items-center justify-between">
-            <p className="text-xs text-gray-400">Unassigned Channels</p>
+            <p className="text-xs text-teal-300 font-medium">public hub (Folder 4)</p>
+            <Globe className="w-3.5 h-3.5 text-teal-400" />
+          </div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-teal-400">{publicHubCount}</span>
+            <span className="text-[10px] text-gray-400">➔ public hub</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">Folder: public hub</p>
+        </div>
+
+        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-3.5">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-gray-400">Unassigned</p>
             <Folder className="w-3.5 h-3.5 text-gray-500" />
           </div>
           <div className="flex items-baseline gap-2 mt-1">
             <span className="text-xl font-mono font-bold text-gray-300">{unassignedCount}</span>
             <span className="text-[10px] text-gray-500">Not in folder</span>
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">Assign via 1-click below</p>
+          <p className="text-[11px] text-gray-500 mt-1">Assign via 1-click</p>
         </div>
       </div>
 
@@ -481,6 +523,16 @@ export default function BackupForwarderDetailPage() {
             </button>
 
             <button
+              onClick={() => setActiveTab('publichub')}
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'publichub' ? 'bg-teal-600/80 text-white border border-teal-500/40' : 'text-teal-400 hover:text-white'
+              }`}
+            >
+              <Globe className="w-3 h-3" />
+              public hub ({publicHubCount})
+            </button>
+
+            <button
               onClick={() => setActiveTab('unassigned')}
               className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
                 activeTab === 'unassigned' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white'
@@ -536,6 +588,7 @@ export default function BackupForwarderDetailPage() {
               const isLive = channel.is_live !== false;
               const isFolder5 = channel.folder_id === 5;
               const isFolder6 = channel.folder_id === 6;
+              const isFolder4 = channel.folder_id === 4;
               const isBusy = folderActionLoading === channel.id;
 
               return (
@@ -546,6 +599,8 @@ export default function BackupForwarderDetailPage() {
                       ? 'border-blue-500/40 bg-blue-950/10 hover:border-blue-500/60'
                       : isFolder6
                       ? 'border-amber-500/40 bg-amber-950/10 hover:border-amber-500/60'
+                      : isFolder4
+                      ? 'border-teal-500/40 bg-teal-950/10 hover:border-teal-500/60'
                       : 'border-[#1f2937] hover:border-gray-700'
                   }`}
                 >
@@ -668,8 +723,38 @@ export default function BackupForwarderDetailPage() {
                           <span>Remove</span>
                         </button>
                       </div>
+                    ) : isFolder4 ? (
+                      /* public hub (Folder 4) Active State */
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        <div className="bg-[#111827] border border-teal-500/40 rounded-lg px-3 py-1.5 text-xs text-left">
+                          <div className="flex items-center gap-1.5 text-teal-400 font-medium">
+                            <span className="w-2 h-2 rounded-full bg-teal-400 animate-pulse" />
+                            🌐 public hub
+                          </div>
+                          <div className="text-[11px] text-gray-400">Folder: public hub</div>
+                        </div>
+
+                        <button
+                          onClick={() => handleResync(channel.id, channel.title)}
+                          title="Re-forward past messages"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors"
+                        >
+                          <RotateCw className="w-3.5 h-3.5" />
+                          <span>Sync Past</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleRemoveFolder(channel.id, 4, 'public hub')}
+                          disabled={isBusy}
+                          title="Remove from public hub folder"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs font-medium transition-colors disabled:opacity-50"
+                        >
+                          <MinusCircle className="w-3.5 h-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      </div>
                     ) : (
-                      /* Unassigned Channel: Quick 1-Click Assign to videoDB or TeraDB */
+                      /* Unassigned Channel: Quick 1-Click Assign to videoDB, TeraDB, or public hub */
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-[11px] text-gray-500 italic mr-1">Not in folder:</span>
                         <button
@@ -688,6 +773,15 @@ export default function BackupForwarderDetailPage() {
                         >
                           <Plus className="w-3.5 h-3.5" />
                           <span>+ TeraDB</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleAssignFolder(channel.id, 4, 'public hub')}
+                          disabled={isBusy}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-teal-600/20 hover:bg-teal-600 text-teal-300 hover:text-white border border-teal-500/30 text-xs font-medium transition-colors disabled:opacity-50"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>+ public hub</span>
                         </button>
                       </div>
                     )}

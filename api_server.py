@@ -587,6 +587,10 @@ async def remove_folder_channel(req: FolderChannelActionRequest):
 async def clear_all_mappings():
     return await bot_manager.clear_all_legacy_mappings(db_b=db_b)
 
+@app.post("/api/telegram/folders/cleanup-to-three", dependencies=[Depends(verify_token)])
+async def cleanup_extra_telegram_folders():
+    return await bot_manager.cleanup_telegram_folders_to_three()
+
 # --- Telegram String Session Generator ---
 PENDING_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
