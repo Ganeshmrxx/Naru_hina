@@ -16,6 +16,7 @@ pyrogram.utils.MIN_CHANNEL_ID = -1009999999999
 pyrogram.utils.MAX_CHANNEL_ID = -1000000000000
 
 from pyrogram import Client, raw
+from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from pyrogram.errors import FloodWait, ChatForwardsRestricted, ChannelPrivate, Forbidden, RPCError
 from config import Config
 
@@ -400,6 +401,116 @@ class UniversalForwarder:
                 except Exception:
                     pass
 
+    async def copy_public_media_group(self, source_username: str, chat_id: int, chat_title: str, msg_id: int, target_id: int) -> bool:
+        """Copies an entire media group using the active worker bot."""
+        await self.initialize_worker_bots_if_needed()
+        bot = self.get_next_worker_bot()
+        bot_me = await bot.get_me()
+        caption = build_caption(None, chat_id, chat_title)
+        try:
+            await bot.copy_media_group(
+                chat_id=target_id,
+                from_chat_id=source_username,
+                message_id=msg_id,
+                captions=caption
+            )
+            return True
+        except FloodWait as e:
+            print(f"   [Worker @{bot_me.username}] FloodWait in album: Sleeping {e.value + 2}s...", flush=True)
+            await asyncio.sleep(e.value + 2)
+            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id)
+        except Exception as e:
+            print(f"   [Worker @{bot_me.username}] Album copy error ({e}), falling back to Userbot...", flush=True)
+            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id)
+
+    async def copy_private_media_group(self, chat_id: int, chat_title: str, msg_id: int, target_id: int) -> bool:
+        """Copies an entire media group using the Userbot."""
+        caption = build_caption(None, chat_id, chat_title)
+        try:
+            await self.user_app.copy_media_group(
+                chat_id=target_id,
+                from_chat_id=chat_id,
+                message_id=msg_id,
+                captions=caption
+            )
+            return True
+        except ChatForwardsRestricted:
+            try:
+                group_msgs = await self.user_app.get_media_group(chat_id, msg_id)
+                return await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
+            except Exception as re:
+                print(f"   [RESTRICTED ALBUM] Fallback error: {re}", flush=True)
+                return False
+        except FloodWait as e:
+            print(f"   [Userbot] Album FloodWait: Sleeping {e.value + 2}s...", flush=True)
+            await asyncio.sleep(e.value + 2)
+            return await self.copy_private_media_group(chat_id, chat_title, msg_id, target_id)
+        except Exception as e:
+            print(f"   [Userbot] copy_media_group error for msg {msg_id}: {e}", flush=True)
+            return False
+
+    async def copy_restricted_media_group(self, chat_id: int, chat_title: str, group_msgs: List[Any], target_id: int) -> bool:
+        """Downloads all items in a restricted album, then uploads via send_media_group with custom caption."""
+        downloaded_files = []
+        media_items = []
+        
+        orig_caption = None
+        for m in group_msgs:
+            if m.caption:
+                orig_caption = m.caption
+                break
+        caption = build_caption(orig_caption, chat_id, chat_title)
+        
+        try:
+            print(f"   [RESTRICTED ALBUM] Downloading {len(group_msgs)} items...", flush=True)
+            for idx, m in enumerate(group_msgs):
+                fpath = await self.user_app.download_media(m, file_name=f"{TEMP_DOWNLOAD_DIR}/")
+                if not fpath or not os.path.exists(fpath):
+                    continue
+                downloaded_files.append(fpath)
+                item_caption = caption if idx == 0 else ""
+                
+                if m.video:
+                    media_items.append(InputMediaVideo(
+                        media=fpath,
+                        caption=item_caption,
+                        duration=getattr(m.video, 'duration', 0),
+                        width=getattr(m.video, 'width', 0),
+                        height=getattr(m.video, 'height', 0),
+                        supports_streaming=True
+                    ))
+                elif m.photo:
+                    media_items.append(InputMediaPhoto(
+                        media=fpath,
+                        caption=item_caption
+                    ))
+                elif m.document:
+                    media_items.append(InputMediaDocument(
+                        media=fpath,
+                        caption=item_caption
+                    ))
+            
+            if not media_items:
+                return False
+                
+            print(f"   [RESTRICTED ALBUM] Uploading complete group ({len(media_items)} items)...", flush=True)
+            await self.user_app.send_media_group(chat_id=target_id, media=media_items)
+            return True
+        except FloodWait as e:
+            print(f"   [RESTRICTED ALBUM] FloodWait: Sleeping {e.value + 2}s...", flush=True)
+            await asyncio.sleep(e.value + 2)
+            return False
+        except Exception as e:
+            print(f"   [RESTRICTED ALBUM] Error uploading album: {e}", flush=True)
+            return False
+        finally:
+            for fpath in downloaded_files:
+                if fpath and os.path.exists(fpath):
+                    try:
+                        os.remove(fpath)
+                    except Exception:
+                        pass
+
     async def process_channel(self, item: Dict[str, Any], queue_remaining: List[Dict[str, Any]]):
         global CURRENT_ACTIVE_CHANNEL
         chat_id = item["chat_id"]
@@ -472,6 +583,8 @@ class UniversalForwarder:
         batch_size = 50
         current_id = last_msg_id + 1
         messages_since_checkpoint = 0
+        processed_group_ids = set()
+        processed_msg_ids = set()
 
         while current_id <= latest_msg_id:
             if SHUTDOWN_REQUESTED:
@@ -500,12 +613,81 @@ class UniversalForwarder:
                 if not msg or getattr(msg, 'empty', True):
                     continue
 
-                # Filter valid content
-                has_content = bool(msg.media or (msg.text and msg.text.strip()))
-                if not has_content:
+                if msg.id in processed_msg_ids:
                     continue
 
-                # Execute transfer using exactly ONE active worker
+                # ==============================================================
+                # RULE 1: GROUPED MESSAGES (ALBUMS) -> FULL GROUP COPIED
+                # "grouped message me photo ho ha ya video , pura grouped copy hoga"
+                # ==============================================================
+                if getattr(msg, 'media_group_id', None):
+                    group_id = msg.media_group_id
+                    if group_id in processed_group_ids:
+                        continue
+
+                    processed_group_ids.add(group_id)
+                    try:
+                        group_msgs = await self.user_app.get_media_group(chat_id, msg.id)
+                    except Exception as ge:
+                        print(f"   Error fetching media group {group_id} ({ge}), treating as single.", flush=True)
+                        group_msgs = [msg]
+
+                    for gm in group_msgs:
+                        processed_msg_ids.add(gm.id)
+
+                    print(f"   [ALBUM] Copying complete media group (Group ID: {group_id}, {len(group_msgs)} items)...", flush=True)
+                    success = False
+                    if is_restricted:
+                        success = await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
+                    elif is_public:
+                        success = await self.copy_public_media_group(chat.username, chat_id, chat_title, msg.id, target_id)
+                    else:
+                        success = await self.copy_private_media_group(chat_id, chat_title, msg.id, target_id)
+
+                    if success:
+                        items_count = len(group_msgs)
+                        total_copied += items_count
+                        messages_since_checkpoint += items_count
+                        print(f"   [OK ALBUM] Group {group_id} ({items_count} items) transferred | Channel Total: {total_copied}", flush=True)
+
+                        if messages_since_checkpoint >= STATUS_UPDATE_EVERY:
+                            save_channel_progress(
+                                chat_id, chat_title, folder_name, target_id, target_name,
+                                msg.id, total_copied, "in_progress", channel_type
+                            )
+                            print(f"   [CHECKPOINT] MongoDB updated! (Msg ID: {msg.id}, Copied: {total_copied})", flush=True)
+                            messages_since_checkpoint = 0
+
+                    await asyncio.sleep(random.uniform(1.5, 2.5))
+                    continue
+
+                # ==============================================================
+                # RULE 2: SINGLE PHOTO -> DO NOT COPY
+                # "but agar photo single me h , copy nahi hoga"
+                # ==============================================================
+                if msg.photo:
+                    print(f"   [SKIP] Single photo ignored (Msg {msg.id})", flush=True)
+                    continue
+
+                # ==============================================================
+                # RULE 3: SINGLE VIDEO -> COPY
+                # "lekin agr video single me h copy hoga"
+                # ==============================================================
+                is_video = bool(msg.video or (msg.document and getattr(msg.document, 'mime_type', '').startswith('video/')))
+                is_text = bool(msg.text and msg.text.strip())
+
+                if not (is_video or is_text):
+                    print(f"   [SKIP] Single non-video media ignored (Msg {msg.id})", flush=True)
+                    continue
+
+                if is_text:
+                    if folder_name == "TeraDB" or "http" in msg.text or "tera" in msg.text.lower():
+                        pass  # Allow TeraBox text/links
+                    else:
+                        print(f"   [SKIP] Non-link text message in {folder_name} ignored (Msg {msg.id})", flush=True)
+                        continue
+
+                # Execute transfer using single active worker
                 success = False
                 if is_restricted:
                     success = await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
@@ -517,7 +699,8 @@ class UniversalForwarder:
                 if success:
                     total_copied += 1
                     messages_since_checkpoint += 1
-                    print(f"   [OK] Msg {msg.id}/{latest_msg_id} transferred | Channel Total: {total_copied}", flush=True)
+                    m_label = "Video" if is_video else "Text"
+                    print(f"   [OK {m_label}] Msg {msg.id}/{latest_msg_id} transferred | Channel Total: {total_copied}", flush=True)
 
                     # Checkpoint to MongoDB every 100 transfers
                     if messages_since_checkpoint >= STATUS_UPDATE_EVERY:
