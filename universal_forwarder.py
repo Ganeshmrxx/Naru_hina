@@ -46,6 +46,7 @@ FOLDER_CONFIG = {
 
 STATUS_UPDATE_EVERY = 10   # Commit to MongoDB every 10 transfers
 BOT_BATCH_SIZE = 10       # Switch active worker bot every 10 messages
+FOLDER_SYNC_INTERVAL = 7200  # Rescan Telegram folders every 2 hours (7200 seconds)
 TEMP_DOWNLOAD_DIR = r"e:\Ganesh\ANIGRAVITY\allforward\temp_downloads"
 
 # Global state for graceful shutdown
@@ -222,15 +223,16 @@ class UniversalForwarder:
         print("Real-time live message listener registered on Userbot.\n", flush=True)
 
     async def folder_watcher_task(self):
-        """Periodically syncs folder channels every 60 seconds to detect newly added channels."""
+        """Periodically syncs folder channels every 2 hours to detect newly added channels."""
         while not SHUTDOWN_REQUESTED:
             try:
-                await asyncio.sleep(60)
+                await asyncio.sleep(FOLDER_SYNC_INTERVAL)
                 if SHUTDOWN_REQUESTED:
                     break
                 for fid in [5, 6]:
                     cids = await self.get_folder_channels(fid)
                     self.folder_channels[fid] = set(cids)
+                print(f"[FOLDER SYNC] Periodic 2-hour scan complete (videoDB: {len(self.folder_channels[5])}, TeraDB: {len(self.folder_channels[6])} channels)", flush=True)
             except Exception:
                 pass
 
