@@ -463,15 +463,17 @@ class BotManager:
                     logging.warning(f"Could not fetch dialog filters: {fe}")
 
                 raw_dialogs = []
-                async for d in client.get_dialogs(limit=200):
+                async for d in client.get_dialogs():
                     chat = d.chat
                     if chat.type not in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
                         continue
                     raw_dialogs.append(d)
 
+                seen_cids = set()
                 for d in raw_dialogs:
                     chat = d.chat
-                    title = str(chat.title or "Untitled").encode("ascii", errors="ignore").decode("ascii").strip()
+                    seen_cids.add(chat.id)
+                    title = str(chat.title or "").strip()
                     if not title:
                         title = f"Chat {chat.id}"
                     
@@ -524,6 +526,49 @@ class BotManager:
                         "is_live": True,
                         "live_status": "active"
                     })
+
+                # Guarantee all folder channels are included even if not in dialogs (e.g. archived)
+                all_folder_channels = list(folder_5_channels | folder_6_channels | folder_4_channels)
+                for f_cid in all_folder_channels:
+                    if f_cid < 0 and f_cid not in seen_cids:
+                        try:
+                            chat = await client.get_chat(f_cid)
+                            if chat:
+                                clean_id = int(str(chat.id).replace("-100", "").replace("-", ""))
+                                if chat.id in folder_5_channels or clean_id in folder_5_channels:
+                                    fid, fname, tid, tname = 5, "videoDB", -1004401442087, "DBXVideos"
+                                elif chat.id in folder_6_channels or clean_id in folder_6_channels:
+                                    fid, fname, tid, tname = 6, "TeraDB", -1004337870091, "DBXTera"
+                                elif chat.id in folder_4_channels or clean_id in folder_4_channels:
+                                    fid, fname, tid, tname = 4, "TARGEThub", None, "TARGEThub"
+                                else:
+                                    fid, fname, tid, tname = None, None, None, None
+
+                                is_creator = bool(getattr(chat, "is_creator", False))
+                                admin_rights = getattr(chat, "admin_rights", None)
+                                is_admin = is_creator or (admin_rights is not None)
+                                can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
+                                type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                                dialogs.append({
+                                    "id": chat.id,
+                                    "title": str(chat.title or f"Chat {chat.id}").strip() or f"Chat {chat.id}",
+                                    "username": getattr(chat, "username", None),
+                                    "type": type_str,
+                                    "is_creator": is_creator,
+                                    "is_admin": is_admin,
+                                    "can_post": can_post,
+                                    "members_count": getattr(chat, "members_count", None),
+                                    "folder_id": fid,
+                                    "folder_name": fname,
+                                    "is_mapped": fid is not None,
+                                    "target_id": tid,
+                                    "target_name": tname,
+                                    "is_live": True,
+                                    "live_status": "active"
+                                })
+                                seen_cids.add(chat.id)
+                        except Exception:
+                            pass
 
             except Exception as e:
                 logging.error(f"Error fetching telegram dialogs: {e}")
