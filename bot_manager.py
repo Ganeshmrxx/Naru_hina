@@ -196,43 +196,81 @@ class BotManager:
         return info
 
     async def _init_worker_bots_if_needed(self):
-        """Initializes fast worker bot on-demand for public channel copying."""
+        """Initializes 12 worker bots pool for public channel copying.
+        Bot 1 is started immediately so copying starts instantly.
+        Remaining bots (2 to 12) are loaded gradually in the background with 2.5s spacing
+        to prevent server freeze and Telegram DC auth exchange bottlenecks.
+        """
         if self.worker_bots_initialized:
             return
+        self.worker_bots_initialized = True
         try:
             from config import Config
             from pyrogram import Client
-            # Start 1 fast worker bot with sufficient timeout for initial DC auth key exchange
-            worker_tokens = Config.BOT_WORKERS[:1]
-            logging.info(f"[WORKER POOL] Initializing Fast Worker Bot...")
-            for idx, token in enumerate(worker_tokens):
-                try:
-                    wb = Client(
-                        f"botmgr_worker_{idx+1}",
-                        api_id=Config.API_ID2,
-                        api_hash=Config.API_HASH2,
-                        bot_token=token
-                    )
-                    await asyncio.wait_for(wb.start(), timeout=35.0)
-                    self.worker_bots.append(wb)
-                    me = await wb.get_me()
-                    logging.info(f"[WORKER POOL] Worker bot ready as @{getattr(me, 'username', 'bot')} ({getattr(me, 'id', 'unknown')}).")
-                except Exception as e:
-                    logging.warning(f"[WORKER POOL] Worker bot {idx+1} start failed/timed out: {e}")
-            self.worker_bots_initialized = True
-            logging.info(f"[WORKER POOL] Ready with {len(self.worker_bots)} active worker bot(s).")
+            all_tokens = getattr(Config, "BOT_WORKERS", [])
+            if not all_tokens:
+                return
+
+            # Start Bot 1 synchronously so copy can begin immediately
+            first_token = all_tokens[0]
+            logging.info(f"[WORKER POOL] Initializing primary Worker Bot (1/{len(all_tokens)})...")
+            try:
+                wb1 = Client(
+                    "botmgr_worker_1",
+                    api_id=Config.API_ID2,
+                    api_hash=Config.API_HASH2,
+                    bot_token=first_token
+                )
+                await asyncio.wait_for(wb1.start(), timeout=35.0)
+                self.worker_bots.append(wb1)
+                me = await wb1.get_me()
+                logging.info(f"[WORKER POOL] Primary worker bot ready as @{getattr(me, 'username', 'bot')} ({getattr(me, 'id', 'unknown')}).")
+            except Exception as e:
+                logging.warning(f"[WORKER POOL] Primary worker bot start failed: {e}")
+
+            # Background task to connect the remaining 11 worker bots gradually
+            if len(all_tokens) > 1:
+                asyncio.create_task(self._load_remaining_worker_bots(all_tokens[1:]))
+
         except Exception as e:
             logging.error(f"[WORKER POOL] Initialization error: {e}")
+
+    async def _load_remaining_worker_bots(self, remaining_tokens: list):
+        """Gradually connects worker bots 2 through 12 in the background."""
+        from config import Config
+        from pyrogram import Client
+        for idx, token in enumerate(remaining_tokens, start=2):
+            await asyncio.sleep(2.5)  # Safe spacing between Telegram DC handshakes
+            try:
+                wb = Client(
+                    f"botmgr_worker_{idx}",
+                    api_id=Config.API_ID2,
+                    api_hash=Config.API_HASH2,
+                    bot_token=token
+                )
+                await asyncio.wait_for(wb.start(), timeout=35.0)
+                self.worker_bots.append(wb)
+                me = await wb.get_me()
+                logging.info(f"[WORKER POOL] Worker bot {idx}/12 joined pool: @{getattr(me, 'username', 'bot')}")
+            except Exception as e:
+                logging.warning(f"[WORKER POOL] Worker bot {idx} failed to start: {e}")
+        logging.info(f"[WORKER POOL] All 12 worker bots pool ready! Active in rotation: {len(self.worker_bots)}")
 
     def _get_next_worker_bot(self):
         """Rotates through worker bots pool, switching bot every 10 messages."""
         if not getattr(self, "worker_bots", []):
             return None
-        bot = self.worker_bots[self.worker_bot_idx % len(self.worker_bots)]
+        active = [b for b in self.worker_bots if getattr(b, "is_connected", False)]
+        if not active:
+            active = self.worker_bots
+        bot = active[self.worker_bot_idx % len(active)]
         self.worker_bot_counter += 1
         if self.worker_bot_counter >= 10:
             self.worker_bot_counter = 0
-            self.worker_bot_idx = (self.worker_bot_idx + 1) % len(self.worker_bots)
+            self.worker_bot_idx = (self.worker_bot_idx + 1) % len(active)
+            next_bot = active[self.worker_bot_idx % len(active)]
+            next_name = getattr(getattr(next_bot, 'me', None), 'username', f"Worker_{self.worker_bot_idx+1}")
+            logging.info(f"[WORKER ROTATION] Switched to next worker bot in pool: @{next_name} (Active in pool: {len(active)}/12)")
         return bot
 
     def set_databases(self, db_a, db_b):
