@@ -5,7 +5,7 @@ import Link from 'next/link';
 import {
   HardDrive, Play, Square, RotateCw, RefreshCw, ArrowLeft,
   Plus, CheckCircle2, ShieldCheck, ScrollText, Radio,
-  Search, Users, Trash2, FolderPlus, Folder, Film, Database,
+  Search, Users, Trash2, Folder, Film, Database,
   ArrowRight, Zap, Crown, Check, X, Sparkles, FolderCheck, MinusCircle
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
@@ -48,7 +48,6 @@ export default function BackupForwarderDetailPage() {
   const [loading, setLoading] = useState(true);
   const [refreshingDialogs, setRefreshingDialogs] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [organizingFolders, setOrganizingFolders] = useState(false);
   const [folderActionLoading, setFolderActionLoading] = useState<number | null>(null);
 
   // Search & Filter state - Default to 'live' to show real-time active channels
@@ -158,23 +157,7 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
-  // Setup / Organize Telegram Folders
-  const handleSetupFolders = async () => {
-    try {
-      setOrganizingFolders(true);
-      const res = await api.setupTelegramFolders();
-      if (res.success) {
-        toast('success', 'Telegram Chat Folders successfully created & organized!');
-        await fetchData(true);
-      } else {
-        toast('warning', 'Telegram Folders setup completed');
-      }
-    } catch (err: unknown) {
-      toast('error', err instanceof Error ? err.message : 'Failed to organize folders');
-    } finally {
-      setOrganizingFolders(false);
-    }
-  };
+
 
   // Assign channel to a Telegram Folder (Folder 5 videoDB or Folder 6 TeraDB)
   const handleAssignFolder = async (chatId: number, folderId: number, folderName: string) => {
@@ -337,15 +320,7 @@ export default function BackupForwarderDetailPage() {
             <span>Live Telegram Sync</span>
           </button>
 
-          <button
-            onClick={handleSetupFolders}
-            disabled={organizingFolders}
-            title="Automatically create and organize Telegram Chat Folders in your account"
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 text-xs font-medium transition-colors disabled:opacity-50"
-          >
-            <FolderPlus className={`w-3.5 h-3.5 ${organizingFolders ? 'animate-spin' : ''}`} />
-            <span>{organizingFolders ? 'Organizing...' : 'Setup Telegram Folders'}</span>
-          </button>
+
 
           <button
             onClick={handleClearLegacyMappings}
