@@ -499,7 +499,11 @@ class TelegramSetTargetRequest(BaseModel):
 
 @app.get("/api/telegram/dialogs", dependencies=[Depends(verify_token)])
 async def get_telegram_dialogs(bot_id: str = "backup_forwarder", refresh: bool = False):
-    return await bot_manager.get_telegram_dialogs(bot_id=bot_id, force_refresh=refresh, db_b=db_b)
+    try:
+        return await bot_manager.get_telegram_dialogs(bot_id=bot_id, force_refresh=refresh, db_b=db_b)
+    except Exception as e:
+        print(f"Error fetching telegram dialogs: {e}")
+        return []
 
 @app.post("/api/telegram/set-target", dependencies=[Depends(verify_token)])
 async def set_telegram_target(req: TelegramSetTargetRequest):
@@ -1217,7 +1221,7 @@ if os.path.exists(admin_out_dir):
     if os.path.exists(next_static):
         app.mount("/_next", StaticFiles(directory=next_static), name="next_static")
 
-    @app.get("/{full_path:path}")
+    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
     async def serve_ui(full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API route not found")

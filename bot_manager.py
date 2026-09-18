@@ -246,7 +246,7 @@ class BotManager:
 
     async def start_all(self):
         # Default bots started by main.py plus backup_forwarder for real-time channel routing
-        default_bots = ["movie_forwarder", "terabox_modifier", "promoter_1", "backup_forwarder"]
+        default_bots = [b for b in ["movie_forwarder", "terabox_modifier", "backup_forwarder"] if b in self.bots]
         for bot_id in default_bots:
             await self.start_bot(bot_id)
             await asyncio.sleep(2)
@@ -407,16 +407,21 @@ class BotManager:
             return self.dialogs_cache
 
         client = None
-        for candidate_id in [bot_id, "backup_forwarder", "movie_forwarder", "promoter_1", "promoter_2"]:
-            inst = self.bots[candidate_id].get("instance")
-            if inst and getattr(inst, "is_connected", False):
-                client = inst
-                break
+        candidates = [cid for cid in [bot_id, "backup_forwarder", "movie_forwarder"] if cid in self.bots]
+        for candidate_id in candidates:
+            bot_entry = self.bots.get(candidate_id)
+            if bot_entry:
+                inst = bot_entry.get("instance")
+                if inst and getattr(inst, "is_connected", False):
+                    client = inst
+                    break
 
-        if client is None:
+        if client is None and "backup_forwarder" in self.bots:
             await self.start_bot("backup_forwarder")
             await asyncio.sleep(2)
-            client = self.bots["backup_forwarder"].get("instance")
+            bot_entry = self.bots.get("backup_forwarder")
+            if bot_entry:
+                client = bot_entry.get("instance")
 
         dialogs = []
         if client and getattr(client, "is_connected", False):
@@ -602,10 +607,14 @@ class BotManager:
         return {"success": True, "source_id": source_id}
 
     async def setup_telegram_folders(self) -> dict:
-        client = self.bots["backup_forwarder"]["instance"]
+        bot_entry = self.bots.get("backup_forwarder")
+        client = bot_entry.get("instance") if bot_entry else None
         if not client or not getattr(client, "is_connected", False):
-            await self.start_bot("backup_forwarder")
-            client = self.bots["backup_forwarder"]["instance"]
+            if "backup_forwarder" in self.bots:
+                await self.start_bot("backup_forwarder")
+                await asyncio.sleep(2)
+                bot_entry = self.bots.get("backup_forwarder")
+                client = bot_entry.get("instance") if bot_entry else None
             if not client:
                 return {"error": "BackupForwarderBot is not running or failed to connect"}
 
