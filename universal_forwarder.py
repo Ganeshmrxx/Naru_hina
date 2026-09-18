@@ -7,7 +7,7 @@ import os
 import glob
 import random
 import signal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from pymongo import MongoClient
 
@@ -44,10 +44,11 @@ FOLDER_CONFIG = {
 }
 
 STATUS_UPDATE_EVERY = 100  # Commit to MongoDB every 100 transfers
-BOT_BATCH_SIZE = 10       # Switch worker bot every 10 messages for public channels
+BOT_BATCH_SIZE = 10       # Switch active worker bot every 10 messages
 TEMP_DOWNLOAD_DIR = r"e:\Ganesh\ANIGRAVITY\allforward\temp_downloads"
 
 # Global state for graceful shutdown
+CURRENT_ACTIVE_CHANNEL = None
 CURRENT_PROGRESS = {
     "chat_id": None,
     "source_name": "",
@@ -67,6 +68,7 @@ SHUTDOWN_REQUESTED = False
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 progress_col = db["forward_progress"]
+queue_col = db["forward_queue"]
 
 def get_channel_progress(chat_id: int) -> Dict[str, Any]:
     doc = progress_col.find_one({"chat_id": chat_id})
@@ -98,7 +100,7 @@ def save_channel_progress(
             "total_copied": total_copied,
             "status": status,
             "channel_type": channel_type,
-            "updated_at": datetime.utcnow()
+            "updated_at": datetime.now(timezone.utc)
         }},
         upsert=True
     )
@@ -113,6 +115,34 @@ def save_channel_progress(
         "status": status,
         "channel_type": channel_type
     })
+
+def update_queue_status(queue_items: List[Dict[str, Any]], active_chat_id: Optional[int]):
+    """Syncs the ordered channel queue to MongoDB collection forward_queue."""
+    for idx, item in enumerate(queue_items):
+        cid = item["chat_id"]
+        if cid == active_chat_id:
+            status = "in_progress"
+        else:
+            doc = get_channel_progress(cid)
+            status = doc.get("status", "queued")
+            if status != "completed":
+                status = "queued"
+
+        queue_col.update_one(
+            {"chat_id": cid},
+            {"$set": {
+                "queue_position": idx + 1,
+                "chat_id": cid,
+                "title": item["title"],
+                "folder_name": item["folder_name"],
+                "folder_id": item["folder_id"],
+                "target_id": item["target_id"],
+                "target_name": item["target_name"],
+                "status": status,
+                "updated_at": datetime.now(timezone.utc)
+            }},
+            upsert=True
+        )
 
 # ==============================================================================
 # CAPTION HELPERS
@@ -142,16 +172,17 @@ class UniversalForwarder:
     def __init__(self):
         self.user_app: Optional[Client] = None
         self.worker_bots: List[Client] = []
+        self.bots_initialized: bool = False
         self.current_bot_idx: int = 0
         self.bot_counter: int = 0
         self.target_input_channels: Dict[int, raw.types.InputChannel] = {}
 
-    async def initialize(self):
-        print("=" * 60, flush=True)
+    async def initialize_userbot(self):
+        print("=" * 70, flush=True)
         print("INITIALIZING UNIVERSAL TELEGRAM FORWARDER", flush=True)
-        print("=" * 60, flush=True)
-        
-        # Clean any stale temp files from previous runs
+        print("=" * 70, flush=True)
+
+        # 1. Clean stale temp downloads
         os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
         stale_files = glob.glob(os.path.join(TEMP_DOWNLOAD_DIR, "*"))
         for sf in stale_files:
@@ -159,10 +190,11 @@ class UniversalForwarder:
                 os.remove(sf)
             except Exception:
                 pass
-        print(f"Cleaned {len(stale_files)} stale temp download files.", flush=True)
+        if stale_files:
+            print(f"Cleaned {len(stale_files)} stale temp download files.", flush=True)
 
-        # 1. Start Userbot Client
-        print("\n[1/3] Connecting Userbot (SESSION2)...", flush=True)
+        # 2. Start Userbot Client
+        print("\n[1/2] Connecting Userbot (SESSION2)...", flush=True)
         self.user_app = Client(
             "userbot_session",
             api_id=Config.API_ID2,
@@ -174,18 +206,24 @@ class UniversalForwarder:
         me = await self.user_app.get_me()
         print(f"   Logged in as Userbot: {me.first_name} (@{me.username}) [ID: {me.id}]", flush=True)
 
-        # 2. Cache Target Channels & Access Hashes
-        print("\n[2/3] Resolving Target Channels...", flush=True)
+        # 3. Cache Target Channels & Access Hashes
+        print("\n[2/2] Resolving Target Channels...", flush=True)
         for cid, info in [(TARGET_VIDEOS_ID, "DBXVideos"), (TARGET_TERA_ID, "DBXTera")]:
             peer = await self.user_app.resolve_peer(cid)
             self.target_input_channels[cid] = raw.types.InputChannel(
                 channel_id=peer.channel_id,
                 access_hash=peer.access_hash
             )
-            print(f"   Cached target: {info} (ID: {cid}, ChannelID: {peer.channel_id})", flush=True)
+            print(f"   Cached Target: {info} (ID: {cid}, ChannelID: {peer.channel_id})", flush=True)
 
-        # 3. Start 12 Worker Bots
-        print(f"\n[3/3] Initializing {len(Config.BOT_WORKERS)} Worker Bots...", flush=True)
+        print("\nUserbot ready! Channel queue will now be built.\n", flush=True)
+
+    async def initialize_worker_bots_if_needed(self):
+        """Initializes worker bots on-demand only when a public channel is processed."""
+        if self.bots_initialized:
+            return
+
+        print(f"\n[LAZY INIT] Connecting {len(Config.BOT_WORKERS)} Worker Bots for Public Channel...", flush=True)
         for idx, token in enumerate(Config.BOT_WORKERS):
             bot = Client(
                 f"worker_bot_{idx+1}",
@@ -195,7 +233,6 @@ class UniversalForwarder:
                 in_memory=True
             )
             await bot.start()
-            # Prime the bot's channel access
             for cid, inp_chan in self.target_input_channels.items():
                 try:
                     await bot.invoke(raw.functions.channels.GetChannels(id=[inp_chan]))
@@ -205,9 +242,11 @@ class UniversalForwarder:
             self.worker_bots.append(bot)
             print(f"   Worker {idx+1:02d}: @{b_me.username} [READY]", flush=True)
 
-        print(f"\nSystem initialized with 1 Userbot and {len(self.worker_bots)} Worker Bots.\n", flush=True)
+        self.bots_initialized = True
+        print(f"Worker Bots pool ready with {len(self.worker_bots)} bots.\n", flush=True)
 
     def get_next_worker_bot(self) -> Client:
+        """Returns exactly ONE active worker bot, rotating every 10 messages."""
         bot = self.worker_bots[self.current_bot_idx]
         self.bot_counter += 1
         if self.bot_counter >= BOT_BATCH_SIZE:
@@ -227,7 +266,8 @@ class UniversalForwarder:
         return channel_ids
 
     async def copy_public_message(self, source_username: str, chat_id: int, chat_title: str, msg: Any, target_id: int) -> bool:
-        """Copies message using rotating worker bots pool."""
+        """Copies message using 1 active bot at a time (rotating every 10 messages)."""
+        await self.initialize_worker_bots_if_needed()
         bot = self.get_next_worker_bot()
         bot_me = await bot.get_me()
         caption = build_caption(msg.caption, chat_id, chat_title)
@@ -253,7 +293,7 @@ class UniversalForwarder:
             await asyncio.sleep(e.value + 2)
             return await self.copy_private_message(chat_id, chat_title, msg, target_id)
         except Exception as e:
-            print(f"   [Worker @{bot_me.username}] Copy error ({e}), falling back to Userbot...", flush=True)
+            print(f"   [Worker @{bot_me.username}] Error ({e}), falling back to Userbot...", flush=True)
             return await self.copy_private_message(chat_id, chat_title, msg, target_id)
 
     async def copy_private_message(self, chat_id: int, chat_title: str, msg: Any, target_id: int) -> bool:
@@ -276,7 +316,6 @@ class UniversalForwarder:
                 )
             return True
         except ChatForwardsRestricted:
-            # Dynamically switch to download & upload
             return await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
         except FloodWait as e:
             print(f"   [Userbot] FloodWait: Sleeping {e.value + 2}s...", flush=True)
@@ -361,19 +400,25 @@ class UniversalForwarder:
                 except Exception:
                     pass
 
-    async def process_channel(self, chat_id: int, folder_id: int):
-        f_info = FOLDER_CONFIG[folder_id]
-        folder_name = f_info["folder_name"]
-        target_id = f_info["target_id"]
-        target_name = f_info["target_name"]
+    async def process_channel(self, item: Dict[str, Any], queue_remaining: List[Dict[str, Any]]):
+        global CURRENT_ACTIVE_CHANNEL
+        chat_id = item["chat_id"]
+        chat_title = item["title"]
+        folder_name = item["folder_name"]
+        target_id = item["target_id"]
+        target_name = item["target_name"]
+        CURRENT_ACTIVE_CHANNEL = chat_id
+
+        # Update queue state in MongoDB
+        update_queue_status([item] + queue_remaining, active_chat_id=chat_id)
 
         try:
             chat = await self.user_app.get_chat(chat_id)
         except Exception as e:
-            print(f"\n[SKIP] Could not access channel {chat_id}: {e}", flush=True)
+            print(f"\n[SKIP] Could not access channel '{chat_title}' ({chat_id}): {e}", flush=True)
             return
 
-        chat_title = chat.title or "Unknown"
+        chat_title = chat.title or chat_title
         is_public = bool(chat.username)
         is_restricted = getattr(chat, 'has_protected_content', False)
 
@@ -381,17 +426,18 @@ class UniversalForwarder:
             mode_desc = "Mode C: Restricted (Download & Upload via Userbot)"
             channel_type = "restricted"
         elif is_public:
-            mode_desc = f"Mode A: Public (@{chat.username}) (12 Bots Rotation)"
+            mode_desc = f"Mode A: Public (@{chat.username}) (12 Bots Rotation, 1 Bot at a time)"
             channel_type = "public"
         else:
             mode_desc = "Mode B: Private (Direct Copy via Userbot)"
             channel_type = "private"
 
-        print(f"\n" + "=" * 60, flush=True)
-        print(f"PROCESSING CHANNEL: {chat_title}", flush=True)
+        print(f"\n" + "=" * 70, flush=True)
+        print(f"WORKING ON CHANNEL: {chat_title}", flush=True)
         print(f"Folder: {folder_name} | Target: {target_name} ({target_id})", flush=True)
         print(f"Channel ID: {chat_id} | Type: {mode_desc}", flush=True)
-        print("=" * 60, flush=True)
+        print(f"Remaining in Queue: {len(queue_remaining)} channels waiting", flush=True)
+        print("=" * 70, flush=True)
 
         # 1. Fetch Latest Message ID
         latest_msg_id = 0
@@ -400,7 +446,11 @@ class UniversalForwarder:
             break
 
         if latest_msg_id == 0:
-            print("   Channel appears to have no messages. Moving to next.", flush=True)
+            print("   Channel appears empty. Moving to next queued channel.", flush=True)
+            save_channel_progress(
+                chat_id, chat_title, folder_name, target_id, target_name,
+                0, 0, "completed", channel_type
+            )
             return
 
         # 2. Check MongoDB for resume point
@@ -418,7 +468,7 @@ class UniversalForwarder:
 
         print(f"   Resuming from Message ID: {last_msg_id + 1} to {latest_msg_id} (Already copied: {total_copied})", flush=True)
 
-        # 3. Batch Iterate From Oldest to Newest
+        # 3. Batch Iterate From Oldest to Newest (1 channel at a time)
         batch_size = 50
         current_id = last_msg_id + 1
         messages_since_checkpoint = 0
@@ -450,12 +500,12 @@ class UniversalForwarder:
                 if not msg or getattr(msg, 'empty', True):
                     continue
 
-                # We copy media messages and text messages
+                # Filter valid content
                 has_content = bool(msg.media or (msg.text and msg.text.strip()))
                 if not has_content:
                     continue
 
-                # Execute transfer according to channel mode
+                # Execute transfer using exactly ONE active worker
                 success = False
                 if is_restricted:
                     success = await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
@@ -467,7 +517,7 @@ class UniversalForwarder:
                 if success:
                     total_copied += 1
                     messages_since_checkpoint += 1
-                    print(f"   [OK] Msg {msg.id}/{latest_msg_id} copied | Total: {total_copied}", flush=True)
+                    print(f"   [OK] Msg {msg.id}/{latest_msg_id} transferred | Channel Total: {total_copied}", flush=True)
 
                     # Checkpoint to MongoDB every 100 transfers
                     if messages_since_checkpoint >= STATUS_UPDATE_EVERY:
@@ -478,10 +528,10 @@ class UniversalForwarder:
                         print(f"   [CHECKPOINT] MongoDB updated! (Msg ID: {msg.id}, Copied: {total_copied})", flush=True)
                         messages_since_checkpoint = 0
 
-                # Delay to respect Telegram limits
+                # Gentle delay to respect Telegram limits
                 await asyncio.sleep(random.uniform(1.2, 2.2))
 
-            # Update progress at the end of each batch of message IDs
+            # Update batch progress in MongoDB
             save_channel_progress(
                 chat_id, chat_title, folder_name, target_id, target_name,
                 end_id, total_copied, "in_progress", channel_type
@@ -493,31 +543,62 @@ class UniversalForwarder:
             chat_id, chat_title, folder_name, target_id, target_name,
             latest_msg_id, total_copied, "completed", channel_type
         )
-        print(f"\n[DONE] Finished channel '{chat_title}'! Total copied: {total_copied}\n", flush=True)
+        print(f"\n[DONE] Channel '{chat_title}' finished completely! (Total copied: {total_copied})", flush=True)
 
     async def run(self):
-        await self.initialize()
+        await self.initialize_userbot()
 
+        # Build full Queue from both folders
+        full_queue = []
         for fid in [5, 6]:
+            f_cfg = FOLDER_CONFIG[fid]
+            channel_ids = await self.get_folder_channels(fid)
+            for cid in channel_ids:
+                try:
+                    c_info = await self.user_app.get_chat(cid)
+                    title = c_info.title or f"Channel {cid}"
+                except Exception:
+                    title = f"Channel {cid}"
+
+                full_queue.append({
+                    "chat_id": cid,
+                    "title": title,
+                    "folder_id": fid,
+                    "folder_name": f_cfg["folder_name"],
+                    "target_id": f_cfg["target_id"],
+                    "target_name": f_cfg["target_name"]
+                })
+
+        # Filter out already completed channels from active processing
+        pending_queue = []
+        for item in full_queue:
+            prog = get_channel_progress(item["chat_id"])
+            if prog.get("status") == "completed":
+                print(f"   [SKIP COMPLETED] {item['title']} is already finished.", flush=True)
+            else:
+                pending_queue.append(item)
+
+        # Print Queue Status
+        print("\n" + "=" * 70, flush=True)
+        print(f"FORWARDING QUEUE ({len(pending_queue)} CHANNELS TO PROCESS - 1 AT A TIME)", flush=True)
+        print("=" * 70, flush=True)
+        for idx, item in enumerate(pending_queue):
+            pos_label = "[ACTIVE 1ST]" if idx == 0 else f"[QUEUED #{idx+1}]"
+            print(f" {pos_label:14} {item['title']:<25} | Folder: {item['folder_name']:<8} | Target: {item['target_name']}", flush=True)
+        print("=" * 70 + "\n", flush=True)
+
+        # Process exactly ONE channel at a time
+        while pending_queue:
             if SHUTDOWN_REQUESTED:
                 break
+            current_item = pending_queue.pop(0)
+            await self.process_channel(current_item, queue_remaining=pending_queue)
 
-            f_cfg = FOLDER_CONFIG[fid]
-            print(f"\n>>> SCANNING FOLDER: {f_cfg['folder_name']} (Folder ID: {fid}) <<<", flush=True)
-            channel_ids = await self.get_folder_channels(fid)
-            print(f"Found {len(channel_ids)} channels in {f_cfg['folder_name']}", flush=True)
-
-            for cid in channel_ids:
-                if SHUTDOWN_REQUESTED:
-                    break
-                await self.process_channel(cid, fid)
-
-        print("\nAll folders and channels have been processed.", flush=True)
+        print("\nAll queued channels have been processed successfully.", flush=True)
         await self.shutdown()
 
     async def shutdown(self):
         print("\nClosing client connections...", flush=True)
-        # Flush final progress
         if CURRENT_PROGRESS.get("chat_id"):
             save_channel_progress(
                 CURRENT_PROGRESS["chat_id"],
