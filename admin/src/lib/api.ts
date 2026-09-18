@@ -297,6 +297,26 @@ class ApiClient {
     });
   }
 
+  async addChannelToFolder(chatId: number, folderId: number) {
+    return this.request<{ success: boolean; chat_id: number; folder_id: number; error?: string }>('/api/telegram/folders/assign', {
+      method: 'POST',
+      body: JSON.stringify({ chat_id: chatId, folder_id: folderId }),
+    });
+  }
+
+  async removeChannelFromFolder(chatId: number, folderId: number) {
+    return this.request<{ success: boolean; chat_id: number; folder_id: number; error?: string }>('/api/telegram/folders/remove', {
+      method: 'POST',
+      body: JSON.stringify({ chat_id: chatId, folder_id: folderId }),
+    });
+  }
+
+  async clearAllMappings() {
+    return this.request<{ success: boolean; deleted_count: number }>('/api/telegram/clear-all-mappings', {
+      method: 'POST',
+    });
+  }
+
   async setupTelegramFolders() {
     return this.request<{ success: boolean; folders: Array<{ id: number; title: string; count: number; success?: boolean; error?: string }> }>('/api/telegram/setup-folders', {
       method: 'POST',

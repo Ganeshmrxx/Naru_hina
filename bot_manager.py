@@ -433,6 +433,29 @@ class BotManager:
         if client and getattr(client, "is_connected", False):
             try:
                 from pyrogram.enums import ChatType
+                
+                # Fetch Telegram folders (dialog filters) to determine target channel
+                folder_5_channels = set()  # videoDB -> DBXVideos (-1004401442087)
+                folder_6_channels = set()  # TeraDB -> DBXTera (-1004337870091)
+                try:
+                    filters = await client.invoke(GetDialogFilters())
+                    for f in filters:
+                        fid = getattr(f, 'id', None)
+                        if fid in [5, 6]:
+                            for p in getattr(f, 'include_peers', []):
+                                cid = getattr(p, 'channel_id', getattr(p, 'chat_id', None))
+                                if cid:
+                                    clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
+                                    full_cid = int(f"-100{clean_cid}")
+                                    if fid == 5:
+                                        folder_5_channels.add(full_cid)
+                                        folder_5_channels.add(clean_cid)
+                                    elif fid == 6:
+                                        folder_6_channels.add(full_cid)
+                                        folder_6_channels.add(clean_cid)
+                except Exception as fe:
+                    logging.warning(f"Could not fetch dialog filters: {fe}")
+
                 raw_dialogs = []
                 async for d in client.get_dialogs(limit=200):
                     chat = d.chat
@@ -452,6 +475,26 @@ class BotManager:
                     can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
                     type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
                     
+                    clean_id = int(str(chat.id).replace("-100", "").replace("-", ""))
+                    if chat.id in folder_5_channels or clean_id in folder_5_channels:
+                        folder_id = 5
+                        folder_name = "videoDB"
+                        target_id = -1004401442087
+                        target_name = "DBXVideos"
+                        is_mapped = True
+                    elif chat.id in folder_6_channels or clean_id in folder_6_channels:
+                        folder_id = 6
+                        folder_name = "TeraDB"
+                        target_id = -1004337870091
+                        target_name = "DBXTera"
+                        is_mapped = True
+                    else:
+                        folder_id = None
+                        folder_name = None
+                        target_id = None
+                        target_name = None
+                        is_mapped = False
+
                     dialogs.append({
                         "id": chat.id,
                         "title": title,
@@ -461,18 +504,17 @@ class BotManager:
                         "is_admin": is_admin,
                         "can_post": can_post,
                         "members_count": getattr(chat, "members_count", None),
-                        "is_mapped": False,
-                        "target_id": None,
-                        "target_name": None,
+                        "folder_id": folder_id,
+                        "folder_name": folder_name,
+                        "is_mapped": is_mapped,
+                        "target_id": target_id,
+                        "target_name": target_name,
                         "is_live": True,
                         "live_status": "active"
                     })
 
             except Exception as e:
                 logging.error(f"Error fetching telegram dialogs: {e}")
-
-        if db_b is not None:
-            self._enrich_dialogs_with_db(dialogs, db_b)
 
         if any(d.get("is_live", False) for d in dialogs):
             self.dialogs_cache = dialogs
@@ -596,13 +638,92 @@ class BotManager:
             "job": job_info
         }
 
-    async def remove_channel_mapping(self, source_id: int, db_b = None) -> dict:
+    async def add_channel_to_folder(self, folder_id: int, chat_id: int) -> dict:
+        bot_entry = self.bots.get("backup_forwarder")
+        client = bot_entry.get("instance") if bot_entry else None
+        if not client or not getattr(client, "is_connected", False):
+            return {"success": False, "error": "Backup Forwarder userbot is not connected"}
+
+        try:
+            filters = await client.invoke(GetDialogFilters())
+            target_filter = None
+            for f in filters:
+                if getattr(f, "id", None) == folder_id:
+                    target_filter = f
+                    break
+
+            if not target_filter:
+                return {"success": False, "error": f"Folder ID {folder_id} not found in Telegram"}
+
+            peer = await client.resolve_peer(chat_id)
+            include_peers = list(getattr(target_filter, "include_peers", []))
+            clean_target = int(str(chat_id).replace("-100", "").replace("-", ""))
+
+            already_there = False
+            for p in include_peers:
+                cid = getattr(p, "channel_id", getattr(p, "chat_id", None))
+                if cid and cid == clean_target:
+                    already_there = True
+                    break
+
+            if not already_there:
+                include_peers.append(peer)
+                target_filter.include_peers = include_peers
+                await client.invoke(UpdateDialogFilter(id=folder_id, filter=target_filter))
+
+            self.dialogs_cache = None
+            self.dialogs_cache_time = 0
+            return {"success": True, "chat_id": chat_id, "folder_id": folder_id}
+        except Exception as e:
+            err = str(e).encode("ascii", errors="ignore").decode("ascii")
+            return {"success": False, "error": err}
+
+    async def remove_channel_from_folder(self, folder_id: int, chat_id: int) -> dict:
+        bot_entry = self.bots.get("backup_forwarder")
+        client = bot_entry.get("instance") if bot_entry else None
+        if not client or not getattr(client, "is_connected", False):
+            return {"success": False, "error": "Backup Forwarder userbot is not connected"}
+
+        try:
+            filters = await client.invoke(GetDialogFilters())
+            target_filter = None
+            for f in filters:
+                if getattr(f, "id", None) == folder_id:
+                    target_filter = f
+                    break
+
+            if not target_filter:
+                return {"success": False, "error": f"Folder ID {folder_id} not found in Telegram"}
+
+            clean_target = int(str(chat_id).replace("-100", "").replace("-", ""))
+            def peer_matches(peer) -> bool:
+                cid = getattr(peer, "channel_id", getattr(peer, "chat_id", getattr(peer, "user_id", None)))
+                return cid == clean_target or cid == chat_id
+
+            orig_include = getattr(target_filter, "include_peers", [])
+            new_include = [p for p in orig_include if not peer_matches(p)]
+            orig_pinned = getattr(target_filter, "pinned_peers", [])
+            new_pinned = [p for p in orig_pinned if not peer_matches(p)]
+
+            target_filter.include_peers = new_include
+            target_filter.pinned_peers = new_pinned
+            await client.invoke(UpdateDialogFilter(id=folder_id, filter=target_filter))
+
+            self.dialogs_cache = None
+            self.dialogs_cache_time = 0
+            return {"success": True, "chat_id": chat_id, "folder_id": folder_id}
+        except Exception as e:
+            err = str(e).encode("ascii", errors="ignore").decode("ascii")
+            return {"success": False, "error": err}
+
+    async def clear_all_legacy_mappings(self, db_b = None) -> dict:
+        deleted = 0
         if db_b is not None:
-            db_b.xDataChannels.delete_one({"_id": source_id})
-            db_b.xDataChannels.delete_one({"_id": str(source_id)})
-        self.dialogs_cache = []
+            res = db_b.xDataChannels.delete_many({})
+            deleted = res.deleted_count
+        self.dialogs_cache = None
         self.dialogs_cache_time = 0
-        return {"success": True, "source_id": source_id}
+        return {"success": True, "deleted_count": deleted}
 
     async def setup_telegram_folders(self) -> dict:
         bot_entry = self.bots.get("backup_forwarder")

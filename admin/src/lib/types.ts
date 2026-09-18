@@ -83,6 +83,8 @@ export interface TelegramDialog {
   can_post: boolean;
   members_count: number | null;
   is_mapped: boolean;
+  folder_id?: number | null;
+  folder_name?: string | null;
   target_id: number | null;
   target_name: string | null;
   is_live?: boolean;

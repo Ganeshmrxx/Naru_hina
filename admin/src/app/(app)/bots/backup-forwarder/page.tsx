@@ -4,9 +4,9 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import {
   HardDrive, Play, Square, RotateCw, RefreshCw, ArrowLeft,
-  Plus, CheckCircle2, AlertCircle, ShieldCheck, ScrollText, Radio,
-  ArrowRightLeft, ArrowRight, Search, Users, Edit3, Trash2,
-  Send, Zap, Crown, Check, X, AlertTriangle, Sparkles, FolderPlus
+  Plus, CheckCircle2, ShieldCheck, ScrollText, Radio,
+  Search, Users, Trash2, FolderPlus, Folder, Film, Database,
+  ArrowRight, Zap, Crown, Check, X, Sparkles, FolderCheck, MinusCircle
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -45,60 +45,38 @@ export default function BackupForwarderDetailPage() {
   const [dialogs, setDialogs] = useState<TelegramDialog[]>([]);
   const [jobs, setJobs] = useState<Record<string, unknown>[]>([]);
   const [logs, setLogs] = useState<Record<string, unknown>[]>([]);
-  const [xDataCount, setXDataCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [refreshingDialogs, setRefreshingDialogs] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [cleaningDead, setCleaningDead] = useState(false);
   const [organizingFolders, setOrganizingFolders] = useState(false);
+  const [folderActionLoading, setFolderActionLoading] = useState<number | null>(null);
 
   // Search & Filter state - Default to 'live' to show real-time active channels
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'mapped' | 'admin' | 'dead' | 'all'>('live');
-
-  // Target Selection Modal state
-  const [modalOpen, setModalOpen] = useState(false);
-  const [selectedSource, setSelectedSource] = useState<TelegramDialog | null>(null);
-  const [targetSearch, setTargetSearch] = useState('');
-  const [onlyAdminTargets, setOnlyAdminTargets] = useState(true);
-  const [selectedTargetId, setSelectedTargetId] = useState<number | null>(null);
-  const [customTargetId, setCustomTargetId] = useState('');
-  const [forwardHistory, setForwardHistory] = useState(true);
-  const [modalSubmitting, setModalSubmitting] = useState(false);
-
-  // Unlink Confirm state
-  const [unlinkConfirmOpen, setUnlinkConfirmOpen] = useState(false);
-  const [unlinkSourceId, setUnlinkSourceId] = useState<number | null>(null);
-
-  // Clean Dead Confirm state
-  const [cleanDeadConfirmOpen, setCleanDeadConfirmOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'live' | 'videodb' | 'teradb' | 'unassigned' | 'admin' | 'all'>('live');
 
   // Bot Stop/Restart Confirm state
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'stop' | 'restart'>('stop');
 
+  // Clear legacy mappings state
+  const [clearingLegacy, setClearingLegacy] = useState(false);
+
   // Load all data
   const fetchData = async (forceRefreshTelegram: boolean = false) => {
     try {
       if (forceRefreshTelegram) setRefreshingDialogs(true);
-      const [botData, dialogsData, jobsData, logsData, dbData] = await Promise.all([
+      const [botData, dialogsData, jobsData, logsData] = await Promise.all([
         api.getBotStatus(botId).catch(() => ({})),
         api.getTelegramDialogs(forceRefreshTelegram).catch(() => []),
         api.getForwardJobs().catch(() => []),
         api.getBotLogs(botId, 30).catch(() => []),
-        api.getDatabaseStatus().catch(() => null),
       ]);
 
       setBot(botData);
       setDialogs(dialogsData || []);
       setJobs(jobsData || []);
       setLogs(logsData || []);
-
-      const clusterB = (dbData as Record<string, unknown>)?.cluster_b as Record<string, unknown> | undefined;
-      const colls = clusterB?.collections as Record<string, { count: number }> | undefined;
-      if (colls?.xData) {
-        setXDataCount(colls.xData.count || 0);
-      }
     } catch (e) {
       console.error('Error fetching data:', e);
     } finally {
@@ -118,7 +96,7 @@ export default function BackupForwarderDetailPage() {
   // When bot is online and live channels is 0, auto-sync from Telegram once
   useEffect(() => {
     if (bot && bot.is_running && !autoSyncedRef.current) {
-      const hasLive = dialogs.some(d => d.is_live);
+      const hasLive = dialogs.some((d) => d.is_live);
       if (!hasLive) {
         autoSyncedRef.current = true;
         fetchData(true);
@@ -158,100 +136,6 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
-  // Open Target Selection Modal for a channel
-  const openTargetModal = (sourceChannel: TelegramDialog) => {
-    setSelectedSource(sourceChannel);
-    setSelectedTargetId(sourceChannel.target_id || null);
-    setCustomTargetId('');
-    setTargetSearch('');
-    setOnlyAdminTargets(true);
-    setForwardHistory(true);
-    setModalOpen(true);
-  };
-
-  // Submit Target Channel Selection
-  const handleSaveTarget = async () => {
-    if (!selectedSource) return;
-
-    let targetId: number | null = selectedTargetId;
-    let targetName = 'Target Channel';
-
-    if (customTargetId.trim()) {
-      const parsed = parseInt(customTargetId.trim());
-      if (isNaN(parsed)) {
-        toast('warning', 'Please enter a valid numeric Channel ID (e.g. -1001234567890)');
-        return;
-      }
-      targetId = parsed;
-      targetName = `Custom (${parsed})`;
-    }
-
-    if (!targetId) {
-      toast('warning', 'Please select a target channel or enter a custom ID');
-      return;
-    }
-
-    const matchedTarget = dialogs.find((d) => d.id === targetId);
-    if (matchedTarget) {
-      targetName = matchedTarget.title;
-    }
-
-    setModalSubmitting(true);
-    try {
-      await api.setTelegramTarget({
-        source_id: selectedSource.id,
-        source_name: selectedSource.title,
-        target_id: targetId,
-        target_name: targetName,
-        forward_history: forwardHistory,
-      });
-
-      toast(
-        'success',
-        `Target set: ${selectedSource.title} -> ${targetName}.${
-          forwardHistory ? ' Historical messages forwarding launched!' : ' Live forwarding active!'
-        }`
-      );
-
-      setModalOpen(false);
-      await fetchData(false);
-    } catch (err: unknown) {
-      toast('error', err instanceof Error ? err.message : 'Failed to set target channel');
-    } finally {
-      setModalSubmitting(false);
-    }
-  };
-
-  // Unlink / Remove Mapping
-  const handleUnlink = async () => {
-    if (!unlinkSourceId) return;
-    setUnlinkConfirmOpen(false);
-    try {
-      await api.removeTelegramTarget(unlinkSourceId);
-      toast('info', 'Channel mapping unlinked. Live forwarding stopped for this channel.');
-      await fetchData(false);
-    } catch (err: unknown) {
-      toast('error', err instanceof Error ? err.message : 'Failed to remove target mapping');
-    } finally {
-      setUnlinkSourceId(null);
-    }
-  };
-
-  // Clean Dead Channels
-  const handleCleanDeadChannels = async () => {
-    setCleanDeadConfirmOpen(false);
-    setCleaningDead(true);
-    try {
-      const res = await api.cleanDeadChannels();
-      toast('success', `Cleaned ${res.deleted_count} dead/stale channels from database!`);
-      await fetchData(true);
-    } catch (e: unknown) {
-      toast('error', e instanceof Error ? e.message : 'Failed to clean dead channels');
-    } finally {
-      setCleaningDead(false);
-    }
-  };
-
   // Re-sync Past Messages
   const handleResync = async (sourceId: number, sourceTitle: string) => {
     try {
@@ -281,6 +165,7 @@ export default function BackupForwarderDetailPage() {
       const res = await api.setupTelegramFolders();
       if (res.success) {
         toast('success', 'Telegram Chat Folders successfully created & organized!');
+        await fetchData(true);
       } else {
         toast('warning', 'Telegram Folders setup completed');
       }
@@ -291,10 +176,61 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
-  // Counts
+  // Assign channel to a Telegram Folder (Folder 5 videoDB or Folder 6 TeraDB)
+  const handleAssignFolder = async (chatId: number, folderId: number, folderName: string) => {
+    setFolderActionLoading(chatId);
+    try {
+      const res = await api.addChannelToFolder(chatId, folderId);
+      if (res.success) {
+        toast('success', `Added to ${folderName}! Target: ${folderId === 5 ? 'DBXVideos' : 'DBXTera'}`);
+        await fetchData(true);
+      } else {
+        toast('error', res.error || `Failed to add to ${folderName}`);
+      }
+    } catch (e: unknown) {
+      toast('error', e instanceof Error ? e.message : 'Action failed');
+    } finally {
+      setFolderActionLoading(null);
+    }
+  };
+
+  // Remove channel from Telegram Folder
+  const handleRemoveFolder = async (chatId: number, folderId: number, folderName: string) => {
+    setFolderActionLoading(chatId);
+    try {
+      const res = await api.removeChannelFromFolder(chatId, folderId);
+      if (res.success) {
+        toast('info', `Removed from ${folderName}`);
+        await fetchData(true);
+      } else {
+        toast('error', res.error || `Failed to remove from ${folderName}`);
+      }
+    } catch (e: unknown) {
+      toast('error', e instanceof Error ? e.message : 'Action failed');
+    } finally {
+      setFolderActionLoading(null);
+    }
+  };
+
+  // Clear all old database mappings
+  const handleClearLegacyMappings = async () => {
+    setClearingLegacy(true);
+    try {
+      const res = await api.clearAllMappings();
+      toast('success', `Cleared ${res.deleted_count} old database mappings!`);
+      await fetchData(true);
+    } catch (e: unknown) {
+      toast('error', e instanceof Error ? e.message : 'Failed to clear old mappings');
+    } finally {
+      setClearingLegacy(false);
+    }
+  };
+
+  // Folder-based Counts
   const liveCount = useMemo(() => dialogs.filter((d) => d.is_live !== false).length, [dialogs]);
-  const deadCount = useMemo(() => dialogs.filter((d) => d.is_live === false).length, [dialogs]);
-  const mappedCount = useMemo(() => dialogs.filter((d) => d.is_mapped && d.is_live !== false).length, [dialogs]);
+  const videoDBCount = useMemo(() => dialogs.filter((d) => d.folder_id === 5 && d.is_live !== false).length, [dialogs]);
+  const teraDBCount = useMemo(() => dialogs.filter((d) => d.folder_id === 6 && d.is_live !== false).length, [dialogs]);
+  const unassignedCount = useMemo(() => dialogs.filter((d) => !d.folder_id && d.is_live !== false).length, [dialogs]);
   const adminCount = useMemo(() => dialogs.filter((d) => d.is_admin && d.is_live !== false).length, [dialogs]);
 
   // Filter dialogs for main list
@@ -302,9 +238,10 @@ export default function BackupForwarderDetailPage() {
     return dialogs.filter((d) => {
       // Tab filter
       if (activeTab === 'live' && d.is_live === false) return false;
-      if (activeTab === 'mapped' && (!d.is_mapped || d.is_live === false)) return false;
+      if (activeTab === 'videodb' && (d.folder_id !== 5 || d.is_live === false)) return false;
+      if (activeTab === 'teradb' && (d.folder_id !== 6 || d.is_live === false)) return false;
+      if (activeTab === 'unassigned' && (d.folder_id || d.is_live === false)) return false;
       if (activeTab === 'admin' && (!d.is_admin || d.is_live === false)) return false;
-      if (activeTab === 'dead' && d.is_live !== false) return false;
 
       // Search filter
       if (searchQuery.trim()) {
@@ -313,35 +250,14 @@ export default function BackupForwarderDetailPage() {
         const idMatch = d.id.toString().includes(q);
         const userMatch = d.username ? d.username.toLowerCase().includes(q) : false;
         const targetMatch = d.target_name ? d.target_name.toLowerCase().includes(q) : false;
-        return titleMatch || idMatch || userMatch || targetMatch;
+        const folderMatch = d.folder_name ? d.folder_name.toLowerCase().includes(q) : false;
+        return titleMatch || idMatch || userMatch || targetMatch || folderMatch;
       }
       return true;
     });
   }, [dialogs, activeTab, searchQuery]);
 
-  // Candidates for Target Selection Modal (Exclude dead channels)
-  const candidateTargets = useMemo(() => {
-    if (!selectedSource) return [];
-    return dialogs.filter((d) => {
-      // Cannot forward to oneself
-      if (d.id === selectedSource.id) return false;
-      // Do not allow dead channels as targets
-      if (d.is_live === false) return false;
-      // Filter by admin if toggled
-      if (onlyAdminTargets && !d.is_admin) return false;
-      // Search inside modal
-      if (targetSearch.trim()) {
-        const q = targetSearch.toLowerCase();
-        const titleMatch = d.title.toLowerCase().includes(q);
-        const idMatch = d.id.toString().includes(q);
-        const userMatch = d.username ? d.username.toLowerCase().includes(q) : false;
-        return titleMatch || idMatch || userMatch;
-      }
-      return true;
-    });
-  }, [dialogs, selectedSource, onlyAdminTargets, targetSearch]);
-
-  if (loading) return <LoadingState message="Loading Telegram channels & routing setup..." />;
+  if (loading) return <LoadingState message="Loading Telegram channels & folder routing..." />;
 
   const isRunning = Boolean(bot?.is_running);
   const runningJobs = jobs.filter((j) => j.status === 'running');
@@ -365,16 +281,16 @@ export default function BackupForwarderDetailPage() {
           </div>
           <div>
             <div className="flex items-center gap-2.5">
-              <h1 className="text-xl font-bold text-white">Channel Forwarding Dashboard</h1>
+              <h1 className="text-xl font-bold text-white">Folder-Based Forwarding Router</h1>
               <StatusBadge status={isRunning ? 'online' : 'offline'} />
             </div>
             <p className="text-xs text-gray-400 mt-1">
-              Live Telegram channel router powered by Backup Forwarder (<code className="text-blue-300">@ganeshmrxx</code>)
+              Target channels are automatically determined by Telegram Folders (<code className="text-blue-300">@ganeshmrxx</code>)
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {isRunning ? (
             <>
               <button
@@ -410,6 +326,7 @@ export default function BackupForwarderDetailPage() {
               Start Userbot
             </button>
           )}
+
           <button
             onClick={() => fetchData(true)}
             disabled={refreshingDialogs}
@@ -419,87 +336,101 @@ export default function BackupForwarderDetailPage() {
             <RefreshCw className={`w-3.5 h-3.5 ${refreshingDialogs ? 'animate-spin text-blue-400' : ''}`} />
             <span>Live Telegram Sync</span>
           </button>
+
           <button
             onClick={handleSetupFolders}
             disabled={organizingFolders}
-            title="Automatically create and organize Telegram Chat Folders: [Videos DB], [TeraBox], [Restricted Video], [Restricted TeraBox], [Target Hub]"
+            title="Automatically create and organize Telegram Chat Folders in your account"
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 text-xs font-medium transition-colors disabled:opacity-50"
           >
             <FolderPlus className={`w-3.5 h-3.5 ${organizingFolders ? 'animate-spin' : ''}`} />
             <span>{organizingFolders ? 'Organizing...' : 'Setup Telegram Folders'}</span>
           </button>
+
+          <button
+            onClick={handleClearLegacyMappings}
+            disabled={clearingLegacy}
+            title="Remove all legacy per-channel database records from MongoDB"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-xs font-medium transition-colors disabled:opacity-50"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-gray-400" />
+            <span>{clearingLegacy ? 'Clearing...' : 'Clear Old DB Mappings'}</span>
+          </button>
         </div>
+      </div>
+
+      {/* Target Routing Rule Explainer Banner */}
+      <div className="bg-gradient-to-r from-blue-900/20 via-indigo-900/20 to-purple-900/20 border border-blue-500/20 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-lg bg-blue-500/10 text-blue-400 flex-shrink-0">
+            <Sparkles className="w-5 h-5 text-blue-400" />
+          </div>
+          <div>
+            <h4 className="text-xs font-semibold text-white">
+              Automatic Telegram Folder Routing Active
+            </h4>
+            <p className="text-[11px] text-gray-400 mt-0.5">
+              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Old database mappings are disabled.
+            </p>
+          </div>
+        </div>
+
+        <Link
+          href="/forwarding"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-medium transition-colors whitespace-nowrap"
+        >
+          <span>Universal Forwarder Monitor</span>
+          <ArrowRight className="w-3.5 h-3.5" />
+        </Link>
       </div>
 
       {/* Metrics Row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
-          <p className="text-xs text-gray-400">Live Telegram Channels</p>
+          <p className="text-xs text-gray-400">Total Live Channels</p>
           <div className="flex items-baseline gap-2 mt-1">
             <span className="text-xl font-mono font-bold text-white">{liveCount}</span>
-            <span className="text-[10px] text-emerald-400 font-medium">Real-Time Verified</span>
+            <span className="text-[10px] text-emerald-400 font-medium">Real-Time</span>
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">Active in your account</p>
+          <p className="text-[11px] text-gray-500 mt-1">Active in Telegram account</p>
+        </div>
+
+        <div className="bg-[#111827] border border-blue-500/30 rounded-xl p-4 bg-blue-950/10">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-blue-300 font-medium">videoDB (Folder 5)</p>
+            <Film className="w-3.5 h-3.5 text-blue-400" />
+          </div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-blue-400">{videoDBCount}</span>
+            <span className="text-[10px] text-gray-400">➔ DBXVideos</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">Target: -1004401442087</p>
+        </div>
+
+        <div className="bg-[#111827] border border-amber-500/30 rounded-xl p-4 bg-amber-950/10">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-amber-300 font-medium">TeraDB (Folder 6)</p>
+            <Database className="w-3.5 h-3.5 text-amber-400" />
+          </div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-amber-400">{teraDBCount}</span>
+            <span className="text-[10px] text-gray-400">➔ DBXTera</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">Target: -1004337870091</p>
         </div>
 
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
-          <p className="text-xs text-gray-400">Active Forwarding Mappings</p>
-          <div className="flex items-baseline gap-2 mt-1">
-            <span className="text-xl font-mono font-bold text-emerald-400">{mappedCount}</span>
-            <span className="text-[10px] text-gray-400">Live</span>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-gray-400">Unassigned Channels</p>
+            <Folder className="w-3.5 h-3.5 text-gray-500" />
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">Routing to targets in real-time</p>
-        </div>
-
-        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
-          <p className="text-xs text-gray-400">My Admin / Target Channels</p>
           <div className="flex items-baseline gap-2 mt-1">
-            <span className="text-xl font-mono font-bold text-purple-400">{adminCount}</span>
-            <span className="text-[10px] text-amber-300 flex items-center gap-0.5">
-              <Crown className="w-2.5 h-2.5" /> Owner
-            </span>
+            <span className="text-xl font-mono font-bold text-gray-300">{unassignedCount}</span>
+            <span className="text-[10px] text-gray-500">Not in folder</span>
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">Channels where you can post</p>
-        </div>
-
-        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
-          <p className="text-xs text-gray-400">Dead / Left Channels</p>
-          <div className="flex items-baseline gap-2 mt-1">
-            <span className={`text-xl font-mono font-bold ${deadCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>
-              {deadCount}
-            </span>
-            {deadCount > 0 && <span className="text-[10px] text-red-400">Stale in DB</span>}
-          </div>
-          <p className="text-[11px] text-gray-500 mt-1">Banned/deleted by Telegram</p>
+          <p className="text-[11px] text-gray-500 mt-1">Assign via 1-click below</p>
         </div>
       </div>
-
-      {/* Dead / Stale Channels Cleanup Banner */}
-      {deadCount > 0 && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-amber-500/20 text-amber-400 flex-shrink-0">
-              <AlertTriangle className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-xs font-semibold text-white flex items-center gap-2">
-                {deadCount} Inaccessible / Dead Channels in MongoDB
-              </h4>
-              <p className="text-[11px] text-gray-400 mt-0.5">
-                These channels are saved in MongoDB mappings, but they are no longer in your Telegram account (deleted, banned, or you left them).
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setCleanDeadConfirmOpen(true)}
-            disabled={cleaningDead}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 text-xs font-medium transition-colors whitespace-nowrap shadow-sm"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            {cleaningDead ? 'Cleaning...' : `Clean All ${deadCount} Dead Channels`}
-          </button>
-        </div>
-      )}
 
       {/* Active History Jobs Banner (if any running) */}
       {runningJobs.length > 0 && (
@@ -553,14 +484,36 @@ export default function BackupForwarderDetailPage() {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               Live Channels ({liveCount})
             </button>
+
             <button
-              onClick={() => setActiveTab('mapped')}
+              onClick={() => setActiveTab('videodb')}
               className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-                activeTab === 'mapped' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
+                activeTab === 'videodb' ? 'bg-blue-600/80 text-white border border-blue-500/40' : 'text-blue-400 hover:text-white'
               }`}
             >
-              Active Forwarding ({mappedCount})
+              <Film className="w-3 h-3" />
+              videoDB ({videoDBCount})
             </button>
+
+            <button
+              onClick={() => setActiveTab('teradb')}
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'teradb' ? 'bg-amber-600/80 text-white border border-amber-500/40' : 'text-amber-400 hover:text-white'
+              }`}
+            >
+              <Database className="w-3 h-3" />
+              TeraDB ({teraDBCount})
+            </button>
+
+            <button
+              onClick={() => setActiveTab('unassigned')}
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'unassigned' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Unassigned ({unassignedCount})
+            </button>
+
             <button
               onClick={() => setActiveTab('admin')}
               className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
@@ -570,17 +523,7 @@ export default function BackupForwarderDetailPage() {
               <Crown className="w-3 h-3 text-amber-300" />
               My Admin Targets ({adminCount})
             </button>
-            {deadCount > 0 && (
-              <button
-                onClick={() => setActiveTab('dead')}
-                className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-                  activeTab === 'dead' ? 'bg-red-600 text-white' : 'text-red-400 hover:text-red-300'
-                }`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                Dead in Telegram ({deadCount})
-              </button>
-            )}
+
             <button
               onClick={() => setActiveTab('all')}
               className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap ${
@@ -604,7 +547,7 @@ export default function BackupForwarderDetailPage() {
           </div>
         </div>
 
-        {/* Telegram-style Channels List */}
+        {/* Telegram Channels List */}
         {filteredDialogs.length === 0 ? (
           <div className="py-12 text-center text-gray-500 text-xs">
             <Radio className="w-8 h-8 mx-auto mb-2 text-gray-600" />
@@ -616,15 +559,18 @@ export default function BackupForwarderDetailPage() {
               const gradient = getAvatarGradient(channel.id);
               const initials = getInitials(channel.title);
               const isLive = channel.is_live !== false;
+              const isFolder5 = channel.folder_id === 5;
+              const isFolder6 = channel.folder_id === 6;
+              const isBusy = folderActionLoading === channel.id;
 
               return (
                 <div
                   key={channel.id}
                   className={`bg-[#0d1117] border rounded-xl p-4 transition-all duration-200 flex flex-col md:flex-row md:items-center justify-between gap-4 ${
-                    !isLive
-                      ? 'border-red-500/30 bg-red-950/10'
-                      : channel.is_mapped
-                      ? 'border-emerald-500/40 hover:border-emerald-500/60 bg-emerald-950/10'
+                    isFolder5
+                      ? 'border-blue-500/40 bg-blue-950/10 hover:border-blue-500/60'
+                      : isFolder6
+                      ? 'border-amber-500/40 bg-amber-950/10 hover:border-amber-500/60'
                       : 'border-[#1f2937] hover:border-gray-700'
                   }`}
                 >
@@ -632,7 +578,7 @@ export default function BackupForwarderDetailPage() {
                   <div className="flex items-center gap-3.5 min-w-0">
                     {/* Telegram Avatar */}
                     <div
-                      className={`w-11 h-11 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0 select-none opacity-${isLive ? '100' : '60'}`}
+                      className={`w-11 h-11 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0 select-none`}
                     >
                       {initials}
                     </div>
@@ -645,38 +591,33 @@ export default function BackupForwarderDetailPage() {
                         </h3>
 
                         {/* Real-time Status Badge */}
-                        {isLive ? (
+                        {isLive && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                             Live on Telegram
                           </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20">
-                            <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                            Dead / Left Telegram
-                          </span>
                         )}
 
-                        {/* Admin Badge */}
+                        {/* Role / Type Badge */}
                         {channel.is_admin ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                            <Crown className="w-2.5 h-2.5 text-amber-400" />
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                            <Crown className="w-2.5 h-2.5 text-amber-300" />
                             Admin / Owner
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-800 text-gray-400">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-800 text-gray-400">
                             Member
                           </span>
                         )}
 
-                        {/* Type Badge */}
-                        <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-mono bg-[#111827] text-gray-400 border border-[#1f2937]">
+                        <span className="text-[10px] uppercase tracking-wider text-gray-500">
                           {channel.type}
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-3 text-xs text-gray-400 font-mono mt-1">
-                        <span>ID: {channel.id}</span>
+                      {/* ID and Handle */}
+                      <div className="flex items-center gap-3 text-xs text-gray-400 mt-1 font-mono flex-wrap">
+                        <span>ID: <code className="text-gray-300">{channel.id}</code></span>
                         {channel.username && (
                           <span className="text-blue-400 font-sans">@{channel.username}</span>
                         )}
@@ -690,75 +631,90 @@ export default function BackupForwarderDetailPage() {
                     </div>
                   </div>
 
-                  {/* Right: Target Status & Actions */}
-                  <div className="flex items-center justify-between md:justify-end gap-3 flex-shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-[#1f2937]/50">
-                    {!isLive ? (
-                      /* Dead Channel State */
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] text-red-400/80 italic">Channel inaccessible in Telegram</span>
-                        <button
-                          onClick={() => {
-                            setUnlinkSourceId(channel.id);
-                            setUnlinkConfirmOpen(true);
-                          }}
-                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          Clean from DB
-                        </button>
-                      </div>
-                    ) : channel.is_mapped ? (
-                      /* Active Routing Box */
+                  {/* Right: Folder-Based Target Status & 1-Click Action Buttons */}
+                  <div className="flex items-center justify-between md:justify-end gap-2.5 flex-shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-[#1f2937]/50 flex-wrap">
+                    {isFolder5 ? (
+                      /* videoDB (Folder 5) Active State */
                       <div className="flex items-center gap-2 flex-wrap justify-end">
-                        <div className="bg-[#111827] border border-emerald-500/30 rounded-lg px-3 py-1.5 text-xs text-left">
-                          <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
-                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                            Forwarding to:
+                        <div className="bg-[#111827] border border-blue-500/40 rounded-lg px-3 py-1.5 text-xs text-left">
+                          <div className="flex items-center gap-1.5 text-blue-400 font-medium">
+                            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                            📁 videoDB ➔ DBXVideos
                           </div>
-                          <div className="text-white font-semibold truncate max-w-[180px]">
-                            {channel.target_name || `ID: ${channel.target_id}`}
-                          </div>
+                          <div className="text-[11px] text-gray-400">Target: -1004401442087</div>
                         </div>
-
-                        {/* Action Buttons */}
-                        <button
-                          onClick={() => openTargetModal(channel)}
-                          title="Change target channel"
-                          className="flex items-center gap-1 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 text-xs font-medium transition-colors"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          Change
-                        </button>
 
                         <button
                           onClick={() => handleResync(channel.id, channel.title)}
-                          title="Re-forward all past messages"
-                          className="flex items-center gap-1 px-2.5 py-2 rounded-lg bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors"
+                          title="Re-forward past messages"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors"
                         >
                           <RotateCw className="w-3.5 h-3.5" />
-                          Sync Past
+                          <span>Sync Past</span>
                         </button>
 
                         <button
-                          onClick={() => {
-                            setUnlinkSourceId(channel.id);
-                            setUnlinkConfirmOpen(true);
-                          }}
-                          title="Remove mapping"
-                          className="p-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs font-medium transition-colors"
+                          onClick={() => handleRemoveFolder(channel.id, 5, 'videoDB')}
+                          disabled={isBusy}
+                          title="Remove from videoDB folder"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs font-medium transition-colors disabled:opacity-50"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <MinusCircle className="w-3.5 h-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      </div>
+                    ) : isFolder6 ? (
+                      /* TeraDB (Folder 6) Active State */
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        <div className="bg-[#111827] border border-amber-500/40 rounded-lg px-3 py-1.5 text-xs text-left">
+                          <div className="flex items-center gap-1.5 text-amber-400 font-medium">
+                            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                            📦 TeraDB ➔ DBXTera
+                          </div>
+                          <div className="text-[11px] text-gray-400">Target: -1004337870091</div>
+                        </div>
+
+                        <button
+                          onClick={() => handleResync(channel.id, channel.title)}
+                          title="Re-forward past messages"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors"
+                        >
+                          <RotateCw className="w-3.5 h-3.5" />
+                          <span>Sync Past</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleRemoveFolder(channel.id, 6, 'TeraDB')}
+                          disabled={isBusy}
+                          title="Remove from TeraDB folder"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs font-medium transition-colors disabled:opacity-50"
+                        >
+                          <MinusCircle className="w-3.5 h-3.5" />
+                          <span>Remove</span>
                         </button>
                       </div>
                     ) : (
-                      /* Unmapped State */
-                      <button
-                        onClick={() => openTargetModal(channel)}
-                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors shadow-sm ml-auto md:ml-0"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Set Target Channel
-                      </button>
+                      /* Unassigned Channel: Quick 1-Click Assign to videoDB or TeraDB */
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[11px] text-gray-500 italic mr-1">Not in folder:</span>
+                        <button
+                          onClick={() => handleAssignFolder(channel.id, 5, 'videoDB')}
+                          disabled={isBusy}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600 text-blue-300 hover:text-white border border-blue-500/30 text-xs font-medium transition-colors disabled:opacity-50"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>+ videoDB</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleAssignFolder(channel.id, 6, 'TeraDB')}
+                          disabled={isBusy}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/30 text-xs font-medium transition-colors disabled:opacity-50"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>+ TeraDB</span>
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -767,210 +723,6 @@ export default function BackupForwarderDetailPage() {
           </div>
         )}
       </div>
-
-      {/* Target Channel Selection Modal (Telegram Dialog Picker) */}
-      {modalOpen && selectedSource && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-          <div className="bg-[#111827] border border-[#1f2937] rounded-xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[90vh] space-y-4 animate-in fade-in zoom-in-95 duration-150">
-            {/* Modal Header */}
-            <div className="flex items-start justify-between">
-              <div>
-                <h2 className="text-base font-bold text-white flex items-center gap-2">
-                  <ArrowRightLeft className="w-4 h-4 text-blue-400" />
-                  Select Target for &ldquo;{selectedSource.title}&rdquo;
-                </h2>
-                <p className="text-xs text-gray-400 mt-1">
-                  All messages posted in this channel will be forwarded to the chosen target.
-                </p>
-              </div>
-              <button
-                onClick={() => setModalOpen(false)}
-                className="text-gray-400 hover:text-white p-1"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Target Filter & Search */}
-            <div className="space-y-2">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                <input
-                  type="text"
-                  placeholder="Search target channel by name or ID..."
-                  value={targetSearch}
-                  onChange={(e) => setTargetSearch(e.target.value)}
-                  className="w-full bg-[#0d1117] border border-[#1f2937] rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-between text-xs text-gray-400 pt-1">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={onlyAdminTargets}
-                    onChange={(e) => setOnlyAdminTargets(e.target.checked)}
-                    className="rounded border-[#1f2937] text-blue-600 focus:ring-0 bg-[#0d1117]"
-                  />
-                  <span>Show Admin Channels only (👑 Recommended)</span>
-                </label>
-                <span className="text-[11px] text-gray-500 font-mono">
-                  {candidateTargets.length} available
-                </span>
-              </div>
-            </div>
-
-            {/* Candidate Target Channels List */}
-            <div className="flex-1 overflow-y-auto max-h-56 space-y-2 pr-1">
-              {candidateTargets.length === 0 ? (
-                <div className="py-8 text-center text-gray-500 text-xs">
-                  <p>No target channels found matching your criteria</p>
-                  <p className="text-[11px] text-gray-600 mt-1">You can type a custom Channel ID below</p>
-                </div>
-              ) : (
-                candidateTargets.map((candidate) => {
-                  const isSelected = selectedTargetId === candidate.id && !customTargetId.trim();
-                  const initials = getInitials(candidate.title);
-                  const gradient = getAvatarGradient(candidate.id);
-
-                  return (
-                    <div
-                      key={candidate.id}
-                      onClick={() => {
-                        setSelectedTargetId(candidate.id);
-                        setCustomTargetId('');
-                      }}
-                      className={`cursor-pointer rounded-lg p-3 border transition-colors flex items-center justify-between gap-3 ${
-                        isSelected
-                          ? 'bg-blue-600/20 border-blue-500 text-white'
-                          : 'bg-[#0d1117] border-[#1f2937] hover:border-gray-600 text-gray-300'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div
-                          className={`w-8 h-8 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-bold text-xs flex-shrink-0`}
-                        >
-                          {initials}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-white truncate">{candidate.title}</p>
-                          <p className="text-[11px] text-gray-400 font-mono truncate">ID: {candidate.id}</p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {candidate.is_admin && (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
-                            <Crown className="w-2.5 h-2.5 text-amber-300" />
-                            Admin
-                          </span>
-                        )}
-                        {isSelected && <Check className="w-4 h-4 text-blue-400" />}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Custom Target ID Fallback */}
-            <div className="pt-2 border-t border-[#1f2937]">
-              <label className="text-xs font-medium text-gray-400 block mb-1">
-                Or enter custom Target Channel ID:
-              </label>
-              <input
-                type="text"
-                placeholder="-1001234567890"
-                value={customTargetId}
-                onChange={(e) => {
-                  setCustomTargetId(e.target.value);
-                  setSelectedTargetId(null);
-                }}
-                className="w-full bg-[#0d1117] border border-[#1f2937] rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-              />
-            </div>
-
-            {/* Forwarding Options */}
-            <div className="bg-[#0d1117] border border-[#1f2937] rounded-lg p-3 space-y-2 text-xs">
-              <label className="flex items-start gap-2.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={forwardHistory}
-                  onChange={(e) => setForwardHistory(e.target.checked)}
-                  className="mt-0.5 rounded border-[#1f2937] text-blue-600 focus:ring-0 bg-[#111827]"
-                />
-                <div>
-                  <span className="font-semibold text-white block">
-                    Forward all existing past messages (History Copy)
-                  </span>
-                  <span className="text-[11px] text-gray-400 block mt-0.5">
-                    Replicates past photos & videos immediately in the background without duplicates.
-                  </span>
-                </div>
-              </label>
-
-              <div className="text-[11px] text-emerald-400 flex items-center gap-1.5 pt-1 border-t border-[#1f2937]/50">
-                <Zap className="w-3.5 h-3.5 flex-shrink-0" />
-                <span>Real-time forwarding will be automatically active for all upcoming new posts.</span>
-              </div>
-            </div>
-
-            {/* Modal Actions */}
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                className="px-4 py-2 rounded-lg bg-[#0d1117] border border-[#1f2937] hover:bg-[#1f2937] text-xs font-medium text-gray-300 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={modalSubmitting || (!selectedTargetId && !customTargetId.trim())}
-                onClick={handleSaveTarget}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
-              >
-                {modalSubmitting ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Saving Target...
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-3.5 h-3.5" />
-                    Set Target & Start Forwarding
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Clean Dead Channels Confirm Dialog */}
-      <ConfirmDialog
-        open={cleanDeadConfirmOpen}
-        title={`Clean All ${deadCount} Dead Channels?`}
-        message="This will remove all channels from MongoDB that have been banned, deleted, or left by the bot on Telegram. Your active channels and forwarding rules will remain completely intact."
-        confirmLabel="Clean Dead Channels"
-        variant="danger"
-        onConfirm={handleCleanDeadChannels}
-        onCancel={() => setCleanDeadConfirmOpen(false)}
-      />
-
-      {/* Unlink Mapping Confirm Dialog */}
-      <ConfirmDialog
-        open={unlinkConfirmOpen}
-        title="Unlink / Delete Channel Mapping?"
-        message="This will stop automatic forwarding and remove the mapping from the database. Past copied messages in the target channel will remain intact."
-        confirmLabel="Remove Mapping"
-        variant="danger"
-        onConfirm={handleUnlink}
-        onCancel={() => {
-          setUnlinkConfirmOpen(false);
-          setUnlinkSourceId(null);
-        }}
-      />
 
       {/* Bot Stop/Restart Confirm Dialog */}
       <ConfirmDialog

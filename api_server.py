@@ -573,6 +573,22 @@ async def clean_dead_channels():
 async def setup_telegram_folders_endpoint():
     return await bot_manager.setup_telegram_folders()
 
+class FolderChannelActionRequest(BaseModel):
+    chat_id: int
+    folder_id: int
+
+@app.post("/api/telegram/folders/assign", dependencies=[Depends(verify_token)])
+async def assign_folder_channel(req: FolderChannelActionRequest):
+    return await bot_manager.add_channel_to_folder(folder_id=req.folder_id, chat_id=req.chat_id)
+
+@app.post("/api/telegram/folders/remove", dependencies=[Depends(verify_token)])
+async def remove_folder_channel(req: FolderChannelActionRequest):
+    return await bot_manager.remove_channel_from_folder(folder_id=req.folder_id, chat_id=req.chat_id)
+
+@app.post("/api/telegram/clear-all-mappings", dependencies=[Depends(verify_token)])
+async def clear_all_mappings():
+    return await bot_manager.clear_all_legacy_mappings(db_b=db_b)
+
 # --- Telegram String Session Generator ---
 PENDING_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
