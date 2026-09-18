@@ -88,6 +88,7 @@ export default function ForwardJobsPage() {
                   <th className="py-3 px-4">Job ID</th>
                   <th className="py-3 px-4">Source ID</th>
                   <th className="py-3 px-4">Target ID</th>
+                  <th className="py-3 px-4">Worker Type</th>
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4">Processed</th>
                   <th className="py-3 px-4">Current Msg</th>
@@ -101,12 +102,31 @@ export default function ForwardJobsPage() {
                   const jobId = job.job_id as string;
                   const status = job.status as string;
                   const isRunning = status === 'running';
+                  const isWorkerBots = job.worker_type === 'worker_bots' || job.is_public === true;
 
                   return (
                     <tr key={jobId} className="hover:bg-[#1f2937]/30 transition-colors">
                       <td className="py-3 px-4 font-mono font-bold text-white">{jobId}</td>
-                      <td className="py-3 px-4 font-mono text-gray-300">{job.source_id as number}</td>
+                      <td className="py-3 px-4 font-mono text-gray-300">
+                        {job.source_name ? (
+                          <span className="text-yellow-300 font-sans block truncate max-w-[140px]" title={String(job.source_name)}>
+                            {String(job.source_name)}
+                          </span>
+                        ) : null}
+                        <span>{job.source_id as number}</span>
+                      </td>
                       <td className="py-3 px-4 font-mono text-gray-300">{job.target_id as number}</td>
+                      <td className="py-3 px-4">
+                        {isWorkerBots ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 whitespace-nowrap">
+                            🤖 12 Worker Bots
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 whitespace-nowrap">
+                            👤 Userbot
+                          </span>
+                        )}
+                      </td>
                       <td className="py-3 px-4">
                         <StatusBadge
                           status={isRunning ? 'running' : status === 'completed' ? 'done' : status === 'failed' ? 'error' : 'offline'}

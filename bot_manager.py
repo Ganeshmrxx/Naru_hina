@@ -4,6 +4,7 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime
+from typing import Optional
 
 # Fix for Python 3.14 where no event loop exists in MainThread on module import
 try:
@@ -145,11 +146,35 @@ class BotManager:
         self.db_b = None
         self._heartbeat_task = None
         self._auto_folder_sync_task = None
-        self._forward_lock = asyncio.Lock()
+        self._public_forward_lock = asyncio.Lock()
+        self._private_forward_lock = asyncio.Lock()
+        self.chat_info_cache = {}  # chat_id -> {"title": str, "username": str|None, "is_public": bool}
         self.worker_bots = []
         self.worker_bots_initialized = False
         self.worker_bot_idx = 0
         self.worker_bot_counter = 0
+
+    async def get_channel_info(self, chat_id: int) -> dict:
+        """Helper to get and cache channel title, username and privacy status."""
+        if chat_id in self.chat_info_cache:
+            return self.chat_info_cache[chat_id]
+        client = None
+        for b_id in ["backup_forwarder", "promoter_1", "promoter_2", "movie_forwarder"]:
+            inst = self.bots[b_id].get("instance")
+            if inst and getattr(inst, "is_connected", False):
+                client = inst
+                break
+        info = {"title": str(chat_id), "username": None, "is_public": False}
+        if client:
+            try:
+                c = await client.get_chat(chat_id)
+                uname = getattr(c, "username", None)
+                title = getattr(c, "title", "") or str(chat_id)
+                info = {"title": title, "username": uname, "is_public": bool(uname)}
+                self.chat_info_cache[chat_id] = info
+            except Exception as e:
+                logging.warning(f"Could not get chat info for {chat_id}: {e}")
+        return info
 
     async def _init_worker_bots_if_needed(self):
         """Initializes worker bots pool on-demand for public channel copying."""
@@ -393,15 +418,25 @@ class BotManager:
         return {"error": "Bot does not support admin promotion"}
 
     # Bulk Forwarding Job Management
-    async def start_bulk_forward_job(self, source_id: int, target_id: int, from_msg_id: int = 0, to_msg_id: int = 0) -> dict:
+    async def start_bulk_forward_job(self, source_id: int, target_id: int, from_msg_id: int = 0, to_msg_id: int = 0, is_public: Optional[bool] = None, source_name: Optional[str] = None) -> dict:
         job_id = str(uuid.uuid4())[:8]
+        cached = self.chat_info_cache.get(source_id, {})
+        if is_public is None and "is_public" in cached:
+            is_public = cached.get("is_public")
+        if not source_name and "title" in cached:
+            source_name = cached.get("title")
+
         job_info = {
             "job_id": job_id,
             "source_id": source_id,
+            "source_name": source_name or str(source_id),
             "target_id": target_id,
             "from_msg_id": from_msg_id,
             "to_msg_id": to_msg_id,
-            "status": "running",
+            "status": "queued",
+            "is_public": is_public,
+            "worker_type": "worker_bots" if is_public else ("userbot" if is_public is False else "unknown"),
+            "worker_label": "🤖 12 Worker Bots (Public)" if is_public else ("👤 Userbot (Private)" if is_public is False else "Detecting..."),
             "processed": 0,
             "total": 0,
             "skipped": 0,
@@ -414,10 +449,10 @@ class BotManager:
         self.forward_jobs[job_id] = job_info
 
         # Run background copy task
-        asyncio.create_task(self._execute_bulk_forward(job_id, source_id, target_id, from_msg_id, to_msg_id))
+        asyncio.create_task(self._execute_bulk_forward(job_id, source_id, target_id, from_msg_id, to_msg_id, is_public=is_public))
         return job_info
 
-    async def _execute_bulk_forward(self, job_id: str, source_id: int, target_id: int, from_msg_id: int, to_msg_id: int):
+    async def _execute_bulk_forward(self, job_id: str, source_id: int, target_id: int, from_msg_id: int, to_msg_id: int, is_public: Optional[bool] = None):
         job = self.forward_jobs[job_id]
         job["status"] = "queued"
         self.folder_sync_status[source_id] = {
@@ -427,48 +462,66 @@ class BotManager:
             "job_id": job_id
         }
 
-        # Acquire lock so only ONE channel's past messages are copied at a time
-        async with self._forward_lock:
-            job["status"] = "running"
-            self.folder_sync_status[source_id]["status"] = "syncing"
+        # Step 1: Use backup_forwarder instance if connected, else promoter or movie forwarder
+        client = None
+        for b_id in ["backup_forwarder", "promoter_1", "promoter_2", "movie_forwarder"]:
+            inst = self.bots[b_id].get("instance")
+            if inst and getattr(inst, "is_connected", False):
+                client = inst
+                break
 
-            # Use backup_forwarder instance if connected, else promoter or movie forwarder
-            client = None
-            for b_id in ["backup_forwarder", "promoter_1", "promoter_2", "movie_forwarder"]:
-                inst = self.bots[b_id].get("instance")
-                if inst and getattr(inst, "is_connected", False):
-                    client = inst
-                    break
+        if client is None:
+            res = await self.start_bot("backup_forwarder")
+            await asyncio.sleep(3)
+            client = self.bots["backup_forwarder"].get("instance")
+            if client is None or not getattr(client, "is_connected", False):
+                job["status"] = "failed"
+                job["error"] = "No connected client available to execute forward job"
+                self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
+                return
 
-            if client is None:
-                # Need to start backup_forwarder temporarily or fail
-                res = await self.start_bot("backup_forwarder")
-                await asyncio.sleep(3)
-                client = self.bots["backup_forwarder"].get("instance")
-                if client is None or not getattr(client, "is_connected", False):
-                    job["status"] = "failed"
-                    job["error"] = "No connected client available to execute forward job"
-                    self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
-                    return
-
-            # Determine if source channel is Public (has username) or Private, and fetch title
-            is_public = False
-            source_username = None
-            source_title = str(source_id)
+        # Step 2: Determine if source channel is Public (has username) or Private, and fetch title
+        source_username = None
+        source_title = job.get("source_name") or str(source_id)
+        if source_id in self.chat_info_cache:
+            info = self.chat_info_cache[source_id]
+            source_title = info.get("title", source_title)
+            source_username = info.get("username")
+            if is_public is None:
+                is_public = info.get("is_public", False)
+        else:
             try:
                 c_info = await client.get_chat(source_id)
                 source_title = getattr(c_info, "title", "") or str(source_id)
                 source_username = getattr(c_info, "username", None)
-                if source_username:
-                    is_public = True
+                if is_public is None:
+                    is_public = bool(source_username)
+                self.chat_info_cache[source_id] = {
+                    "title": source_title,
+                    "username": source_username,
+                    "is_public": is_public
+                }
             except Exception as ce:
                 logging.warning(f"[BULK FORWARD] Could not determine chat info for {source_id}: {ce}")
+                if is_public is None:
+                    is_public = False
+
+        job["source_name"] = source_title
+        job["is_public"] = is_public
+        job["worker_type"] = "worker_bots" if is_public else "userbot"
+        job["worker_label"] = "🤖 12 Worker Bots (Public)" if is_public else "👤 Userbot (Private)"
+
+        # Step 3: Acquire lane lock so only ONE Public channel runs on Worker Bots AND only ONE Private channel runs on Userbot concurrently
+        lane_lock = self._public_forward_lock if is_public else self._private_forward_lock
+        async with lane_lock:
+            job["status"] = "running"
+            self.folder_sync_status[source_id]["status"] = "syncing"
 
             if is_public:
                 await self._init_worker_bots_if_needed()
-                logging.info(f"[BULK FORWARD] Channel {source_id} ('{source_title}', @{source_username}) is PUBLIC -> Using 12 Worker Bots pool (rotating every 10 msgs).")
+                logging.info(f"[BULK FORWARD] [PUBLIC LANE] Channel {source_id} ('{source_title}', @{source_username}) is PUBLIC -> Using 12 Worker Bots pool (rotating every 10 msgs).")
             else:
-                logging.info(f"[BULK FORWARD] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
+                logging.info(f"[BULK FORWARD] [PRIVATE LANE] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
 
             processed_groups = set()
             try:
@@ -742,14 +795,27 @@ class BotManager:
                 self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
 
     async def _auto_folder_sync_runner(self):
-        """Background worker: Automatically syncs past media from all channels in videoDB & TeraDB."""
-        logging.info("[AUTO SYNC] Folder auto-sync worker started.")
+        """Background worker: Automatically syncs past media from all channels in videoDB & TeraDB.
+        Dual-Lane Architecture:
+        - Lane 1: 1 Public Channel running via 12 Worker Bots pool
+        - Lane 2: 1 Private Channel running via Userbot
+        Both lanes run simultaneously in parallel when channels are available.
+        """
+        logging.info("[AUTO SYNC] Folder auto-sync worker started (Dual-Lane: Worker Bots + Userbot).")
         await asyncio.sleep(20)  # Wait for startup
         while True:
             try:
-                # Check if a bulk forward job is already currently running or queued
-                any_running = any(j.get("status") in ["running", "queued"] for j in self.forward_jobs.values())
-                if not any_running:
+                # Check running or queued jobs per lane
+                has_running_public = any(
+                    j.get("status") in ["running", "queued"] and j.get("is_public") is True
+                    for j in self.forward_jobs.values()
+                )
+                has_running_private = any(
+                    j.get("status") in ["running", "queued"] and j.get("is_public") is False
+                    for j in self.forward_jobs.values()
+                )
+
+                if not has_running_public or not has_running_private:
                     client = self.bots["backup_forwarder"].get("instance")
                     if client and getattr(client, "is_connected", False):
                         from pyrogram.raw.functions.messages import GetDialogFilters
@@ -797,10 +863,27 @@ class BotManager:
                                             if not is_db_done:
                                                 channels_to_sync.append((full_cid, tid, fname))
 
-                        if channels_to_sync:
-                            next_cid, next_tid, next_fname = channels_to_sync[0]
-                            logging.info(f"[AUTO SYNC] Auto-launching past media sync for {next_fname} channel {next_cid} -> {next_tid}")
-                            await self.start_bulk_forward_job(source_id=next_cid, target_id=next_tid)
+                        # Filter out channels already currently running or queued
+                        active_cids = {j.get("source_id") for j in self.forward_jobs.values() if j.get("status") in ["running", "queued"]}
+                        pending_channels = [c for c in channels_to_sync if c[0] not in active_cids]
+
+                        for cid, tid, fname in pending_channels:
+                            info = await self.get_channel_info(cid)
+                            c_is_public = info.get("is_public", False)
+                            c_title = info.get("title", str(cid))
+
+                            if c_is_public and not has_running_public:
+                                logging.info(f"[AUTO SYNC] [PUBLIC LANE] Auto-launching 12 Worker Bots sync for '{c_title}' ({cid}) -> {tid} ({fname})")
+                                await self.start_bulk_forward_job(source_id=cid, target_id=tid, is_public=True, source_name=c_title)
+                                has_running_public = True
+
+                            elif not c_is_public and not has_running_private:
+                                logging.info(f"[AUTO SYNC] [PRIVATE LANE] Auto-launching Userbot sync for '{c_title}' ({cid}) -> {tid} ({fname})")
+                                await self.start_bulk_forward_job(source_id=cid, target_id=tid, is_public=False, source_name=c_title)
+                                has_running_private = True
+
+                            if has_running_public and has_running_private:
+                                break
 
             except Exception as e:
                 logging.error(f"[AUTO SYNC] Runner error: {e}")
@@ -919,6 +1002,11 @@ class BotManager:
                         target_name = None
                         is_mapped = False
 
+                    self.chat_info_cache[chat.id] = {
+                        "title": title,
+                        "username": getattr(chat, "username", None),
+                        "is_public": bool(getattr(chat, "username", None))
+                    }
                     sync_state = self.folder_sync_status.get(chat.id, {})
                     dialogs.append({
                         "id": chat.id,
@@ -962,10 +1050,16 @@ class BotManager:
                                 is_admin = is_creator or (admin_rights is not None)
                                 can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
                                 type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                                c_title = str(chat.title or f"Chat {chat.id}").strip() or f"Chat {chat.id}"
+                                self.chat_info_cache[chat.id] = {
+                                    "title": c_title,
+                                    "username": getattr(chat, "username", None),
+                                    "is_public": bool(getattr(chat, "username", None))
+                                }
                                 sync_state = self.folder_sync_status.get(chat.id, {})
                                 dialogs.append({
                                     "id": chat.id,
-                                    "title": str(chat.title or f"Chat {chat.id}").strip() or f"Chat {chat.id}",
+                                    "title": c_title,
                                     "username": getattr(chat, "username", None),
                                     "type": type_str,
                                     "is_creator": is_creator,

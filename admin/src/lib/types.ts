@@ -193,3 +193,23 @@ export interface UniversalStatusResponse {
   total_grouped_albums: number;
   folders: UniversalFolderInfo[];
 }
+
+export interface ForwardJob {
+  job_id: string;
+  source_id: number;
+  source_name?: string;
+  target_id: number;
+  status: 'running' | 'queued' | 'completed' | 'failed' | 'stopped' | string;
+  is_public?: boolean;
+  worker_type?: 'worker_bots' | 'userbot' | string;
+  worker_label?: string;
+  processed: number;
+  total: number;
+  skipped: number;
+  failed: number;
+  current_msg_id: number;
+  started_at: string;
+  last_activity: string;
+  error?: string | null;
+}
+

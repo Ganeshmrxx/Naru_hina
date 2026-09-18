@@ -266,7 +266,7 @@ export default function BackupForwarderDetailPage() {
   if (loading) return <LoadingState message="Loading Telegram channels & folder routing..." />;
 
   const isRunning = Boolean(bot?.is_running);
-  const runningJobs = jobs.filter((j) => j.status === 'running');
+  const runningJobs = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -450,39 +450,88 @@ export default function BackupForwarderDetailPage() {
         </div>
       </div>
 
-      {/* Active History Jobs Banner (if any running) */}
+      {/* Active History Jobs Banner (if any running or queued) */}
       {runningJobs.length > 0 && (
-        <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-blue-400 flex items-center gap-2">
-              <Zap className="w-4 h-4 animate-pulse" />
+        <div className="bg-gradient-to-r from-blue-950/40 via-purple-950/30 to-[#111827] border border-blue-500/30 rounded-xl p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Zap className="w-4 h-4 text-blue-400 animate-pulse" />
               Active History Forwarding in Progress ({runningJobs.length})
+              <span className="text-[11px] font-normal text-gray-400">
+                (Parallel Lanes: 1 Public Bot + 1 Private Userbot)
+              </span>
             </h3>
-            <span className="text-xs text-gray-400">Replicating historical media</span>
+            <span className="text-xs text-gray-400">Dual Lane Concurrency Active</span>
           </div>
           <div className="space-y-2">
-            {runningJobs.map((j) => (
-              <div
-                key={j.job_id as string}
-                className="bg-[#0d1117] border border-[#1f2937] rounded-lg p-3 flex items-center justify-between gap-4 text-xs font-mono"
-              >
-                <div>
-                  <span className="text-gray-400">Job {j.job_id as string}:</span>{' '}
-                  <span className="text-white font-bold">{j.source_id as number}</span> ➔{' '}
-                  <span className="text-emerald-400 font-bold">{j.target_id as number}</span>
-                  <span className="ml-3 text-gray-400">
-                    Copied: <strong className="text-green-400">{j.processed as number}</strong> | Skipped:{' '}
-                    {j.skipped as number}
-                  </span>
-                </div>
-                <button
-                  onClick={() => handleStopJob(j.job_id as string)}
-                  className="px-2.5 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 text-[11px] font-medium transition-colors"
+            {runningJobs.map((j) => {
+              const isWorkerBots = j.worker_type === 'worker_bots' || j.is_public === true;
+              const isUserbot = j.worker_type === 'userbot' || (!j.is_public && j.is_public !== undefined);
+              const isJobRunning = j.status === 'running';
+
+              return (
+                <div
+                  key={j.job_id as string}
+                  className="bg-[#0d1117] border border-[#1f2937] rounded-lg p-3 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
                 >
-                  Stop Job
-                </button>
-              </div>
-            ))}
+                  <div className="flex flex-wrap items-center gap-2 font-mono">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider bg-gray-800 text-gray-300">
+                      Job {j.job_id as string}
+                    </span>
+
+                    {/* Worker Type Badge */}
+                    {isWorkerBots ? (
+                      <span className="px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                        🤖 12 Worker Bots (Public)
+                      </span>
+                    ) : isUserbot ? (
+                      <span className="px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">
+                        👤 Userbot (Private)
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-gray-800 text-gray-400 border border-gray-700 flex items-center gap-1">
+                        Detecting lane...
+                      </span>
+                    )}
+
+                    {/* Status Badge */}
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        isJobRunning
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                      }`}
+                    >
+                      {isJobRunning ? 'RUNNING' : 'QUEUED'}
+                    </span>
+
+                    {/* Channel title / IDs */}
+                    <div className="flex items-center gap-1.5 text-white">
+                      {j.source_name ? (
+                        <span className="font-sans font-semibold text-yellow-300">
+                          &quot;{String(j.source_name)}&quot;
+                        </span>
+                      ) : null}
+                      <span className="font-bold text-gray-300">({j.source_id as number})</span>
+                      <span className="text-gray-500">➔</span>
+                      <span className="text-emerald-400 font-bold">{j.target_id as number}</span>
+                    </div>
+
+                    <span className="ml-1 text-gray-400">
+                      Copied: <strong className="text-green-400">{j.processed as number}</strong> | Skipped:{' '}
+                      {j.skipped as number}
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={() => handleStopJob(j.job_id as string)}
+                    className="px-2.5 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 text-[11px] font-medium transition-colors self-start md:self-auto"
+                  >
+                    Stop Job
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
