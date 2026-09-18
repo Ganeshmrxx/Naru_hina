@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import {
   HardDrive, Play, Square, RotateCw, RefreshCw, ArrowLeft,
@@ -107,11 +107,24 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
+  const autoSyncedRef = useRef(false);
+
   useEffect(() => {
     fetchData(false);
     const interval = setInterval(() => fetchData(false), 8000);
     return () => clearInterval(interval);
   }, []);
+
+  // When bot is online and live channels is 0, auto-sync from Telegram once
+  useEffect(() => {
+    if (bot && bot.is_running && !autoSyncedRef.current) {
+      const hasLive = dialogs.some(d => d.is_live);
+      if (!hasLive) {
+        autoSyncedRef.current = true;
+        fetchData(true);
+      }
+    }
+  }, [bot, dialogs]);
 
   const handleStart = async () => {
     setActionLoading(true);

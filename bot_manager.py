@@ -167,6 +167,9 @@ class BotManager:
             logging.info(f"Starting {bot_id}...", extra={"bot_id": bot_id})
             await bot_info["instance"].start()
             logging.info(f"{bot_id} started successfully", extra={"bot_id": bot_id})
+            if bot_id in ["backup_forwarder", "movie_forwarder"]:
+                self.dialogs_cache = None
+                self.dialogs_cache_time = 0
 
             # Check if promotion task should be launched
             if "promoter" in bot_id and self.promote_enabled.get(bot_id, False):
@@ -401,7 +404,8 @@ class BotManager:
         return {"error": "Job not found"}
 
     async def get_telegram_dialogs(self, bot_id: str = "backup_forwarder", force_refresh: bool = False, db_b = None) -> list:
-        if not force_refresh and self.dialogs_cache and (time.time() - self.dialogs_cache_time < 300):
+        cache_has_live = bool(self.dialogs_cache and any(d.get("is_live", False) for d in self.dialogs_cache))
+        if not force_refresh and cache_has_live and (time.time() - self.dialogs_cache_time < 300):
             if db_b is not None:
                 self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
             return self.dialogs_cache
@@ -421,18 +425,14 @@ class BotManager:
             await asyncio.sleep(2)
             bot_entry = self.bots.get("backup_forwarder")
             if bot_entry:
-                client = bot_entry.get("instance")
+                inst = bot_entry.get("instance")
+                if inst and getattr(inst, "is_connected", False):
+                    client = inst
 
         dialogs = []
         if client and getattr(client, "is_connected", False):
             try:
-                from pyrogram.enums import ChatType, ChatMemberStatus
-                try:
-                    me = await client.get_me()
-                    my_id = me.id
-                except Exception:
-                    my_id = None
-
+                from pyrogram.enums import ChatType
                 raw_dialogs = []
                 async for d in client.get_dialogs(limit=200):
                     chat = d.chat
@@ -447,6 +447,9 @@ class BotManager:
                         title = f"Chat {chat.id}"
                     
                     is_creator = bool(getattr(chat, "is_creator", False))
+                    admin_rights = getattr(chat, "admin_rights", None)
+                    is_admin = is_creator or (admin_rights is not None)
+                    can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
                     type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
                     
                     dialogs.append({
@@ -455,8 +458,8 @@ class BotManager:
                         "username": getattr(chat, "username", None),
                         "type": type_str,
                         "is_creator": is_creator,
-                        "is_admin": is_creator,
-                        "can_post": is_creator,
+                        "is_admin": is_admin,
+                        "can_post": can_post,
                         "members_count": getattr(chat, "members_count", None),
                         "is_mapped": False,
                         "target_id": None,
@@ -465,25 +468,13 @@ class BotManager:
                         "live_status": "active"
                     })
 
-                # Admin check for non-creator channels
-                if my_id:
-                    for d in dialogs:
-                        if d["type"] == "channel" and not d["is_creator"]:
-                            try:
-                                member = await client.get_chat_member(d["id"], my_id)
-                                if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                                    d["is_admin"] = True
-                                    d["can_post"] = True
-                            except Exception:
-                                pass
-
             except Exception as e:
                 logging.error(f"Error fetching telegram dialogs: {e}")
 
         if db_b is not None:
             self._enrich_dialogs_with_db(dialogs, db_b)
 
-        if dialogs:
+        if any(d.get("is_live", False) for d in dialogs):
             self.dialogs_cache = dialogs
             self.dialogs_cache_time = time.time()
 
@@ -537,6 +528,13 @@ class BotManager:
         dialogs = await self.get_telegram_dialogs(force_refresh=True, db_b=db_b)
         live_ids = {d["id"] for d in dialogs if d.get("is_live", True)}
         live_str_ids = {str(d["id"]) for d in dialogs if d.get("is_live", True)}
+
+        if not live_ids:
+            return {
+                "success": False,
+                "error": "No live Telegram channels detected. Please ensure userbot is connected before cleaning dead channels.",
+                "deleted_count": 0
+            }
 
         mappings = list(db_b.xDataChannels.find({}))
         dead_ids = []
