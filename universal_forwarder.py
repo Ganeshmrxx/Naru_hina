@@ -205,6 +205,207 @@ class UniversalForwarder:
         self.current_bot_idx: int = 0
         self.bot_counter: int = 0
         self.target_input_channels: Dict[int, raw.types.InputChannel] = {}
+        self.folder_channels: Dict[int, set] = {5: set(), 6: set()}
+        self.channel_max_backlog_ids: Dict[int, int] = {}
+        self.live_processed_groups: set = set()
+        self.live_processed_msg_ids: set = set()
+        self.folder_watcher_task_handle: Optional[asyncio.Task] = None
+
+    def register_live_handlers(self):
+        """Registers real-time message handler on Userbot for new incoming posts in folder channels."""
+        @self.user_app.on_message()
+        async def on_new_incoming_message(client: Client, message: Any):
+            try:
+                await self.handle_incoming_message(message)
+            except Exception as e:
+                print(f"   [LIVE HANDLER ERROR] Failed on msg {getattr(message, 'id', 0)}: {e}", flush=True)
+        print("Real-time live message listener registered on Userbot.\n", flush=True)
+
+    async def folder_watcher_task(self):
+        """Periodically syncs folder channels every 60 seconds to detect newly added channels."""
+        while not SHUTDOWN_REQUESTED:
+            try:
+                await asyncio.sleep(60)
+                if SHUTDOWN_REQUESTED:
+                    break
+                for fid in [5, 6]:
+                    cids = await self.get_folder_channels(fid)
+                    self.folder_channels[fid] = set(cids)
+            except Exception:
+                pass
+
+    async def handle_incoming_message(self, msg: Any):
+        if not msg or not msg.chat:
+            return
+
+        chat_id = msg.chat.id
+        folder_id = None
+        if chat_id in self.folder_channels.get(5, set()):
+            folder_id = 5
+        elif chat_id in self.folder_channels.get(6, set()):
+            folder_id = 6
+        else:
+            return  # Message is from a channel not in videoDB or TeraDB
+
+        # Prevent duplicate handling
+        if msg.id in self.live_processed_msg_ids:
+            return
+
+        # Check backlog boundary: if this message is within the backlog being copied, skip live handling
+        max_backlog_id = self.channel_max_backlog_ids.get(chat_id)
+        if max_backlog_id is not None and msg.id <= max_backlog_id:
+            return
+
+        f_cfg = FOLDER_CONFIG[folder_id]
+        target_id = f_cfg["target_id"]
+        target_name = f_cfg["target_name"]
+        folder_name = f_cfg["folder_name"]
+        chat_title = msg.chat.title or f"Channel {chat_id}"
+        is_public = bool(msg.chat.username)
+        is_restricted = getattr(msg.chat, 'has_protected_content', False)
+
+        # Restriction check for videoDB (Folder 5)
+        if is_restricted and folder_id == 5:
+            print("\n" + "!" * 70, flush=True)
+            print(f"[LIVE RESTRICTED DETECTED in videoDB] Channel '{chat_title}' ({chat_id}) has copy protection!", flush=True)
+            print("   Mode C is DISABLED for videoDB to protect 512MB disk.", flush=True)
+            print(f"   Auto-removing '{chat_title}' from videoDB folder (Folder 5)...", flush=True)
+            await self.remove_channel_from_folder(folder_id, chat_id)
+            save_channel_progress(
+                chat_id, chat_title, folder_name, target_id, target_name,
+                msg.id, 0, "removed_restricted", "restricted"
+            )
+            queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
+            self.folder_channels[5].discard(chat_id)
+            print("!" * 70 + "\n", flush=True)
+            return
+
+        # ==============================================================
+        # RULE 1: GROUPED MESSAGES (ALBUMS) -> FULL GROUP COPIED
+        # ==============================================================
+        if getattr(msg, 'media_group_id', None):
+            group_id = msg.media_group_id
+            if group_id in self.live_processed_groups:
+                return
+            self.live_processed_groups.add(group_id)
+
+            print(f"\n[LIVE ALBUM] New media group (Group ID: {group_id}) from '{chat_title}' ({chat_id})", flush=True)
+            await asyncio.sleep(1.5)  # Allow all album items to arrive
+            try:
+                group_msgs = await self.user_app.get_media_group(chat_id, msg.id)
+            except Exception as ge:
+                print(f"   Error fetching live media group {group_id} ({ge}), treating as single.", flush=True)
+                group_msgs = [msg]
+
+            for gm in group_msgs:
+                self.live_processed_msg_ids.add(gm.id)
+
+            success = False
+            try:
+                if is_restricted:
+                    success = await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
+                elif is_public:
+                    success = await self.copy_public_media_group(msg.chat.username, chat_id, chat_title, msg.id, target_id, folder_id=folder_id)
+                else:
+                    success = await self.copy_private_media_group(chat_id, chat_title, msg.id, target_id, folder_id=folder_id)
+            except ChatForwardsRestricted:
+                if folder_id == 5:
+                    print(f"\n[LIVE RESTRICTED ENCOUNTERED in videoDB] Album in '{chat_title}' ({chat_id}) is restricted!", flush=True)
+                    await self.remove_channel_from_folder(folder_id, chat_id)
+                    save_channel_progress(
+                        chat_id, chat_title, folder_name, target_id, target_name,
+                        msg.id, 0, "removed_restricted", "restricted"
+                    )
+                    queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
+                    self.folder_channels[5].discard(chat_id)
+                    return
+                else:
+                    success = await self.copy_restricted_media_group(chat_id, chat_title, group_msgs, target_id)
+
+            if success:
+                items_count = len(group_msgs)
+                record_grouped_message(
+                    chat_id=chat_id,
+                    channel_title=chat_title,
+                    group_id=group_id,
+                    message_ids=[gm.id for gm in group_msgs],
+                    target_id=target_id
+                )
+                prog = get_channel_progress(chat_id)
+                cur_copied = prog.get("total_copied", 0) + items_count
+                cur_grouped = prog.get("grouped_copied", 0) + 1
+                save_channel_progress(
+                    chat_id, chat_title, folder_name, target_id, target_name,
+                    msg.id, cur_copied, prog.get("status", "in_progress"),
+                    "restricted" if is_restricted else ("public" if is_public else "private"),
+                    grouped_copied=cur_grouped
+                )
+                print(f"   [OK LIVE ALBUM] Group {group_id} ({items_count} items) -> {target_name} | Channel Total: {cur_copied} (Grouped: {cur_grouped})", flush=True)
+            return
+
+        # Single message handling
+        self.live_processed_msg_ids.add(msg.id)
+
+        # ==============================================================
+        # RULE 2: SINGLE PHOTO -> DO NOT COPY
+        # ==============================================================
+        if msg.photo:
+            print(f"   [LIVE SKIP] Single photo ignored from '{chat_title}' (Msg {msg.id})", flush=True)
+            return
+
+        # ==============================================================
+        # RULE 3: SINGLE VIDEO -> COPY
+        # ==============================================================
+        is_video = bool(msg.video or (msg.document and getattr(msg.document, 'mime_type', '').startswith('video/')))
+        is_text = bool(msg.text and msg.text.strip())
+
+        if not (is_video or is_text):
+            print(f"   [LIVE SKIP] Single non-video media ignored from '{chat_title}' (Msg {msg.id})", flush=True)
+            return
+
+        if is_text:
+            if folder_name == "TeraDB" or "http" in msg.text or "tera" in msg.text.lower():
+                pass
+            else:
+                print(f"   [LIVE SKIP] Non-link text message ignored from '{chat_title}' (Msg {msg.id})", flush=True)
+                return
+
+        m_label = "Video" if is_video else "Text"
+        print(f"\n[LIVE POST] New {m_label} from '{chat_title}' ({chat_id}) -> {target_name} (Msg {msg.id})", flush=True)
+
+        success = False
+        try:
+            if is_restricted:
+                success = await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
+            elif is_public:
+                success = await self.copy_public_message(msg.chat.username, chat_id, chat_title, msg, target_id, folder_id=folder_id)
+            else:
+                success = await self.copy_private_message(chat_id, chat_title, msg, target_id, folder_id=folder_id)
+        except ChatForwardsRestricted:
+            if folder_id == 5:
+                print(f"\n[LIVE RESTRICTED ENCOUNTERED in videoDB] Msg {msg.id} in '{chat_title}' ({chat_id}) is restricted!", flush=True)
+                await self.remove_channel_from_folder(folder_id, chat_id)
+                save_channel_progress(
+                    chat_id, chat_title, folder_name, target_id, target_name,
+                    msg.id, 0, "removed_restricted", "restricted"
+                )
+                queue_col.update_one({"chat_id": chat_id}, {"$set": {"status": "removed_restricted"}})
+                self.folder_channels[5].discard(chat_id)
+                return
+            else:
+                success = await self.copy_restricted_message(chat_id, chat_title, msg, target_id)
+
+        if success:
+            prog = get_channel_progress(chat_id)
+            cur_copied = prog.get("total_copied", 0) + 1
+            cur_grouped = prog.get("grouped_copied", 0)
+            save_channel_progress(
+                chat_id, chat_title, folder_name, target_id, target_name,
+                msg.id, cur_copied, prog.get("status", "in_progress"),
+                "restricted" if is_restricted else ("public" if is_public else "private"),
+                grouped_copied=cur_grouped
+            )
+            print(f"   [OK LIVE {m_label}] Msg {msg.id} transferred to {target_name} | Channel Total: {cur_copied}", flush=True)
 
     async def initialize_userbot(self):
         print("=" * 70, flush=True)
@@ -671,11 +872,13 @@ class UniversalForwarder:
         print(f"Remaining in Queue: {len(queue_remaining)} channels waiting", flush=True)
         print("=" * 70, flush=True)
 
-        # 1. Fetch Latest Message ID
-        latest_msg_id = 0
-        async for m in self.user_app.get_chat_history(chat_id, limit=1):
-            latest_msg_id = m.id
-            break
+        # 1. Fetch Latest Message ID (Backlog boundary)
+        latest_msg_id = item.get("max_backlog_id") or 0
+        if latest_msg_id == 0:
+            async for m in self.user_app.get_chat_history(chat_id, limit=1):
+                latest_msg_id = m.id
+                break
+        self.channel_max_backlog_ids[chat_id] = latest_msg_id
 
         if latest_msg_id == 0:
             print("   Channel appears empty. Moving to next queued channel.", flush=True)
@@ -900,12 +1103,14 @@ class UniversalForwarder:
 
     async def run(self):
         await self.initialize_userbot()
+        self.register_live_handlers()
 
-        # Build full Queue from both folders
+        # Build full Queue from both folders and record max message IDs for backlog boundary
         full_queue = []
         for fid in [5, 6]:
             f_cfg = FOLDER_CONFIG[fid]
             channel_ids = await self.get_folder_channels(fid)
+            self.folder_channels[fid] = set(channel_ids)
             for cid in channel_ids:
                 try:
                     c_info = await self.user_app.get_chat(cid)
@@ -913,14 +1118,28 @@ class UniversalForwarder:
                 except Exception:
                     title = f"Channel {cid}"
 
+                # Capture latest message ID at scan time as backlog boundary
+                cur_max_id = 0
+                try:
+                    async for m in self.user_app.get_chat_history(cid, limit=1):
+                        cur_max_id = m.id
+                        break
+                except Exception:
+                    pass
+                self.channel_max_backlog_ids[cid] = cur_max_id
+
                 full_queue.append({
                     "chat_id": cid,
                     "title": title,
                     "folder_id": fid,
                     "folder_name": f_cfg["folder_name"],
                     "target_id": f_cfg["target_id"],
-                    "target_name": f_cfg["target_name"]
+                    "target_name": f_cfg["target_name"],
+                    "max_backlog_id": cur_max_id
                 })
+
+        # Start dynamic folder watcher in background
+        self.folder_watcher_task_handle = asyncio.create_task(self.folder_watcher_task())
 
         # Filter out already completed or removed channels from active processing
         pending_queue = []
@@ -935,24 +1154,38 @@ class UniversalForwarder:
         # Print Queue Status
         print("\n" + "=" * 70, flush=True)
         print(f"FORWARDING QUEUE ({len(pending_queue)} CHANNELS TO PROCESS - 1 AT A TIME)", flush=True)
+        print("REAL-TIME LIVE LISTENER IS ACTIVE FOR NEW POSTS IN FOLDERS 5 & 6", flush=True)
         print("=" * 70, flush=True)
         for idx, item in enumerate(pending_queue):
             pos_label = "[ACTIVE 1ST]" if idx == 0 else f"[QUEUED #{idx+1}]"
             print(f" {pos_label:14} {item['title']:<25} | Folder: {item['folder_name']:<8} | Target: {item['target_name']}", flush=True)
         print("=" * 70 + "\n", flush=True)
 
-        # Process exactly ONE channel at a time
+        # Process backlog queue ONE channel at a time
         while pending_queue:
             if SHUTDOWN_REQUESTED:
                 break
             current_item = pending_queue.pop(0)
             await self.process_channel(current_item, queue_remaining=pending_queue)
 
-        print("\nAll queued channels have been processed successfully.", flush=True)
+        if not SHUTDOWN_REQUESTED:
+            print("\n" + "=" * 70, flush=True)
+            print("ALL BACKLOG CHANNELS PROCESSED SUCCESSFULLY!", flush=True)
+            print("Universal Forwarder is now running in LIVE MODE for new incoming messages...", flush=True)
+            print("=" * 70 + "\n", flush=True)
+            while not SHUTDOWN_REQUESTED:
+                await asyncio.sleep(1)
+
         await self.shutdown()
 
     async def shutdown(self):
         print("\nClosing client connections...", flush=True)
+        if self.folder_watcher_task_handle:
+            try:
+                self.folder_watcher_task_handle.cancel()
+            except Exception:
+                pass
+
         if CURRENT_PROGRESS.get("chat_id"):
             save_channel_progress(
                 CURRENT_PROGRESS["chat_id"],
