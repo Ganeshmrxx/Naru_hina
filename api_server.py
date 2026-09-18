@@ -18,6 +18,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
 from bot_manager import BotManager
+from pyrogram import Client
+from pyrogram.errors import (
+    SessionPasswordNeeded,
+    PhoneNumberInvalid,
+    PhoneNumberBanned,
+    PhoneCodeInvalid,
+    PhoneCodeExpired,
+    PasswordHashInvalid,
+    FloodWait
+)
+from config import Config
+import uuid
 try:
     from jose import JWTError, jwt
 except ImportError:
@@ -547,6 +559,198 @@ async def clean_dead_channels():
 @app.post("/api/telegram/setup-folders", dependencies=[Depends(verify_token)])
 async def setup_telegram_folders_endpoint():
     return await bot_manager.setup_telegram_folders()
+
+# --- Telegram String Session Generator ---
+PENDING_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+def cleanup_expired_auth_sessions():
+    now = time.time()
+    for auth_id in list(PENDING_AUTH_SESSIONS.keys()):
+        data = PENDING_AUTH_SESSIONS.get(auth_id)
+        if data and (now - data.get("created_at", 0) > 600):
+            client = data.get("client")
+            if client and getattr(client, "is_connected", False):
+                try:
+                    asyncio.create_task(client.disconnect())
+                except Exception:
+                    pass
+            PENDING_AUTH_SESSIONS.pop(auth_id, None)
+
+class SendSessionCodeRequest(BaseModel):
+    phone_number: str
+    api_id: Optional[int] = None
+    api_hash: Optional[str] = None
+
+class VerifySessionCodeRequest(BaseModel):
+    auth_id: str
+    phone_code: str
+    password: Optional[str] = None
+
+class ApplySessionRequest(BaseModel):
+    target_bot: str  # "movie_forwarder" or "backup_forwarder"
+    session_string: str
+
+@app.post("/api/telegram/session/send-code", dependencies=[Depends(verify_token)])
+async def send_telegram_session_code(req: SendSessionCodeRequest):
+    cleanup_expired_auth_sessions()
+    
+    phone = req.phone_number.strip().replace(" ", "").replace("-", "")
+    if not phone.startswith("+"):
+        phone = f"+{phone}"
+        
+    api_id = req.api_id or getattr(Config, "API_ID2", 27672711)
+    api_hash = req.api_hash or getattr(Config, "API_HASH2", "4e7aaf6a6b0ddcb00e05e9234e2e84dd")
+    
+    auth_id = str(uuid.uuid4())
+    client = Client(
+        name=f"auth_session_{auth_id[:8]}",
+        api_id=api_id,
+        api_hash=api_hash,
+        in_memory=True
+    )
+    
+    try:
+        await client.connect()
+        sent_code = await client.send_code(phone)
+        
+        PENDING_AUTH_SESSIONS[auth_id] = {
+            "client": client,
+            "phone_number": phone,
+            "phone_code_hash": sent_code.phone_code_hash,
+            "created_at": time.time(),
+            "api_id": api_id,
+            "api_hash": api_hash
+        }
+        
+        return {
+            "success": True,
+            "auth_id": auth_id,
+            "phone_number": phone,
+            "phone_code_hash": sent_code.phone_code_hash,
+            "timeout": getattr(sent_code, "timeout", 300),
+            "code_type": str(getattr(sent_code, "type", "app")),
+            "message": f"Verification code sent to your Telegram app on {phone}"
+        }
+    except PhoneNumberInvalid:
+        if getattr(client, "is_connected", False):
+            await client.disconnect()
+        raise HTTPException(status_code=400, detail="Invalid phone number. Please include the full country code (e.g. +91...).")
+    except PhoneNumberBanned:
+        if getattr(client, "is_connected", False):
+            await client.disconnect()
+        raise HTTPException(status_code=400, detail="This phone number has been banned by Telegram.")
+    except FloodWait as e:
+        if getattr(client, "is_connected", False):
+            await client.disconnect()
+        raise HTTPException(status_code=429, detail=f"Telegram FloodWait: Please wait {e.value} seconds before trying again.")
+    except Exception as e:
+        if getattr(client, "is_connected", False):
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
+        raise HTTPException(status_code=500, detail=f"Failed to send code: {err_msg}")
+
+@app.post("/api/telegram/session/verify-code", dependencies=[Depends(verify_token)])
+async def verify_telegram_session_code(req: VerifySessionCodeRequest):
+    cleanup_expired_auth_sessions()
+    
+    auth_data = PENDING_AUTH_SESSIONS.get(req.auth_id)
+    if not auth_data:
+        raise HTTPException(status_code=400, detail="Session expired or not found. Please request a new code.")
+        
+    client: Client = auth_data["client"]
+    phone = auth_data["phone_number"]
+    phone_code_hash = auth_data["phone_code_hash"]
+    code = req.phone_code.strip()
+    
+    try:
+        try:
+            await client.sign_in(
+                phone_number=phone,
+                phone_code_hash=phone_code_hash,
+                phone_code=code
+            )
+        except SessionPasswordNeeded:
+            if not req.password:
+                return {
+                    "success": False,
+                    "need_password": True,
+                    "message": "Two-Step Verification (2FA) password is required for this account."
+                }
+            await client.check_password(req.password.strip())
+            
+        session_string = await client.export_session_string()
+        me = await client.get_me()
+        user_info = {
+            "id": me.id,
+            "first_name": me.first_name,
+            "last_name": getattr(me, "last_name", None),
+            "username": getattr(me, "username", None),
+            "phone_number": getattr(me, "phone_number", phone)
+        }
+        
+        await client.disconnect()
+        PENDING_AUTH_SESSIONS.pop(req.auth_id, None)
+        
+        return {
+            "success": True,
+            "session_string": session_string,
+            "user": user_info,
+            "message": "String session generated successfully!"
+        }
+    except PhoneCodeInvalid:
+        raise HTTPException(status_code=400, detail="Invalid verification code. Please check the code in your Telegram app.")
+    except PhoneCodeExpired:
+        raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new one.")
+    except PasswordHashInvalid:
+        raise HTTPException(status_code=400, detail="Incorrect 2FA password. Please try again.")
+    except FloodWait as e:
+        raise HTTPException(status_code=429, detail=f"Telegram FloodWait: Please wait {e.value} seconds.")
+    except Exception as e:
+        err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
+        raise HTTPException(status_code=500, detail=f"Authentication failed: {err_msg}")
+
+@app.post("/api/telegram/session/apply", dependencies=[Depends(verify_token)])
+async def apply_telegram_session(req: ApplySessionRequest):
+    bot_id = req.target_bot
+    if bot_id not in ["movie_forwarder", "backup_forwarder"]:
+        raise HTTPException(status_code=400, detail="Invalid target bot. Must be 'movie_forwarder' or 'backup_forwarder'")
+        
+    session_key = "SESSION1" if bot_id == "movie_forwarder" else "SESSION2"
+    new_session = req.session_string.strip()
+    
+    # 1. Update in-memory Config and environment
+    os.environ[session_key] = new_session
+    setattr(Config, session_key, new_session)
+    
+    # 2. Update config.py on disk so it persists across restarts
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        if os.path.isfile(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            pattern = rf'({session_key}\s*=\s*(?:getenv\("{session_key}"\s*,\s*)?)"[^"]*"\)?'
+            replacement = rf'{session_key} = getenv("{session_key}", "{new_session}")'
+            new_content = re.sub(pattern, replacement, content)
+            
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+    except Exception as e:
+        print(f"Warning: Failed to persist session to config.py: {e}")
+        
+    # 3. Restart target bot with fresh session
+    restart_res = await bot_manager.restart_bot(bot_id)
+    
+    return {
+        "success": True,
+        "target_bot": bot_id,
+        "session_key": session_key,
+        "restart_result": restart_res,
+        "message": f"Successfully applied {session_key} and restarted {bot_id}!"
+    }
 
 # --- Channels & Groups (Aggregated from DB) ---
 @app.get("/api/channels", dependencies=[Depends(verify_token)])

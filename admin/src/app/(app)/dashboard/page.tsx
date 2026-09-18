@@ -4,12 +4,13 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   Activity, Bot, ArrowRightLeft, Image, Video, HardDrive, Clock, AlertCircle,
-  Play, Square, RotateCw, ExternalLink, RefreshCw
+  Play, Square, RotateCw, ExternalLink, RefreshCw, Key
 } from 'lucide-react';
 import { StatCard } from '@/components/ui/StatCard';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { SessionGeneratorModal } from '@/components/ui/SessionGeneratorModal';
 import { toast } from '@/components/ui/Toast';
 import { api } from '@/lib/api';
 
@@ -42,6 +43,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [sessionModalOpen, setSessionModalOpen] = useState(false);
+  const [targetSessionBot, setTargetSessionBot] = useState<'movie_forwarder' | 'backup_forwarder'>('backup_forwarder');
 
   // Confirmation dialog state
   const [confirmState, setConfirmState] = useState<{
@@ -155,17 +158,29 @@ export default function DashboardPage() {
             Real-time status of AllForward bots, media forwarding, and background tasks
           </p>
         </div>
-        <button
-          onClick={() => {
-            setRefreshing(true);
-            fetchData();
-          }}
-          disabled={refreshing}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#111827] border border-[#1f2937] text-sm text-gray-300 hover:text-white hover:bg-[#1f2937] transition-colors self-start sm:self-auto"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-blue-400' : ''}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            onClick={() => {
+              setTargetSessionBot('backup_forwarder');
+              setSessionModalOpen(true);
+            }}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-sm font-medium text-white shadow-lg transition-all"
+          >
+            <Key className="w-4 h-4" />
+            Create String Session
+          </button>
+          <button
+            onClick={() => {
+              setRefreshing(true);
+              fetchData();
+            }}
+            disabled={refreshing}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#111827] border border-[#1f2937] text-sm text-gray-300 hover:text-white hover:bg-[#1f2937] transition-colors"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-blue-400' : ''}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Top Stat Cards */}
@@ -277,8 +292,21 @@ export default function DashboardPage() {
                       <span className="text-gray-200 font-mono">{(bot.messages_processed as number) || 0} msgs</span>
                     </div>
                     {lastError && (
-                      <div className="pt-1 border-t border-red-500/20 text-red-400 truncate">
-                        Err: {lastError}
+                      <div className="pt-1.5 border-t border-red-500/20 text-red-400">
+                        <div className="flex items-center justify-between gap-1 text-[11px]">
+                          <span className="truncate">Err: {lastError}</span>
+                          {lastError.includes('AUTH_KEY_DUPLICATED') && (
+                            <button
+                              onClick={() => {
+                                setTargetSessionBot(botId === 'movie_forwarder' ? 'movie_forwarder' : 'backup_forwarder');
+                                setSessionModalOpen(true);
+                              }}
+                              className="text-blue-400 hover:text-blue-300 font-semibold underline whitespace-nowrap ml-1 flex-shrink-0"
+                            >
+                              Fix Session &rarr;
+                            </button>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -342,6 +370,14 @@ export default function DashboardPage() {
           await confirmState.action();
         }}
         onCancel={() => setConfirmState((prev) => ({ ...prev, open: false }))}
+      />
+
+      {/* Telegram String Session Generator Modal */}
+      <SessionGeneratorModal
+        open={sessionModalOpen}
+        onClose={() => setSessionModalOpen(false)}
+        defaultTargetBot={targetSessionBot}
+        onSessionApplied={fetchData}
       />
     </div>
   );

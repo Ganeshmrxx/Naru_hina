@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, ArrowRightLeft, Bot, Database, BarChart3,
   ScrollText, AlertCircle, Radio, Film, Zap, Megaphone,
-  HardDrive, Settings, LogOut, Hash
+  HardDrive, Settings, LogOut, Hash, Key
 } from 'lucide-react';
 import { logout } from '@/lib/auth';
 
@@ -16,6 +16,7 @@ const navigation = [
   { name: 'Forward Jobs', href: '/forwarding/jobs', icon: Radio },
   { type: 'divider', label: 'Bots' },
   { name: 'All Bots', href: '/bots', icon: Bot },
+  { name: 'Session Generator', href: '/session', icon: Key },
   { name: 'Movie Forwarder', href: '/bots/movie-forwarder', icon: Film },
   { name: 'TeraBox Modifier', href: '/bots/terabox', icon: Zap },
   { name: 'Backup Forwarder', href: '/bots/backup-forwarder', icon: HardDrive },

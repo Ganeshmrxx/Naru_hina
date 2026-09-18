@@ -327,6 +327,48 @@ class ApiClient {
   async getErrors(limit: number = 50) {
     return this.request<Record<string, unknown>[]>(`/api/errors?limit=${limit}`);
   }
+
+  // Telegram Session Generator
+  async sendTelegramSessionCode(data: { phone_number: string; api_id?: number; api_hash?: string }) {
+    return this.request<{
+      success: boolean;
+      auth_id: string;
+      phone_number: string;
+      phone_code_hash: string;
+      timeout: number;
+      code_type: string;
+      message: string;
+    }>('/api/telegram/session/send-code', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async verifyTelegramSessionCode(data: { auth_id: string; phone_code: string; password?: string }) {
+    return this.request<{
+      success: boolean;
+      need_password?: boolean;
+      session_string?: string;
+      user?: { id: number; first_name: string; username?: string; phone_number?: string };
+      message: string;
+    }>('/api/telegram/session/verify-code', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async applyTelegramSession(data: { target_bot: string; session_string: string }) {
+    return this.request<{
+      success: boolean;
+      target_bot: string;
+      session_key: string;
+      restart_result: Record<string, unknown>;
+      message: string;
+    }>('/api/telegram/session/apply', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
 }
 
 export const api = new ApiClient();
