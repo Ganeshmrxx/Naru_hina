@@ -451,13 +451,6 @@ async def auto_forward(client, message):
             media_type = "photo"
             duration = 0
             size = message.photo.file_size
-        elif message.text and has_link:
-            text_to_send = build_text(message.text, incoming_id, source_title or str(incoming_id))
-            try:
-                await message.copy(chat_id=target)
-            except Exception:
-                await client.send_message(chat_id=target, text=text_to_send)
-            return
         else:
             return  # skip unsupported media
     else:

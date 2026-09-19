@@ -1006,7 +1006,7 @@ class BotManager:
                             continue
 
                     is_media = bool(msg.video or msg.document or (msg.photo and (is_teradb or has_link)))
-                    is_text = bool(body_text and has_link)
+                    is_text = False # text-only messages are now always skipped
 
                     if not (is_media or is_text):
                         job["skipped"] += 1
