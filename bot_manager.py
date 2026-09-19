@@ -667,8 +667,9 @@ class BotManager:
                 if is_public is None:
                     is_public = False
 
-        if has_protected_content:
-            logging.warning(f"[RESTRICTED CHANNEL] Channel '{source_title}' ({source_id}) has 'Restrict saving content' enabled. Telegram prohibits copying from this channel. Skipping entire channel immediately to prevent FloodWait!")
+        is_teradb = (target_id == -1004337870091)
+        if has_protected_content and not is_teradb:
+            logging.warning(f"[RESTRICTED CHANNEL] VideoDB Channel '{source_title}' ({source_id}) has 'Restrict saving content' enabled. Telegram prohibits copying from this channel. Skipping and marking restricted in Database.")
             job["status"] = "restricted"
             job["error"] = "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content"
             self.folder_sync_status[source_id] = {
@@ -823,9 +824,9 @@ class BotManager:
                     if to_msg_id > 0 and msg.id > to_msg_id:
                         break
 
-                    # Check if single message has content protection enabled
-                    if getattr(msg, "has_protected_content", False):
-                        logging.warning(f"[RESTRICTED CHANNEL] Message {msg.id} in '{source_title}' ({source_id}) has protected content enabled. Telegram prohibits copying from this channel. Aborting entire channel immediately to prevent FloodWait!")
+                    # Check if single message has content protection enabled (only for VideoDB, not TeraDB)
+                    if getattr(msg, "has_protected_content", False) and not is_teradb:
+                        logging.warning(f"[RESTRICTED CHANNEL] Message {msg.id} in VideoDB channel '{source_title}' ({source_id}) has protected content enabled. Telegram prohibits copying from this channel. Aborting entire channel immediately to prevent FloodWait!")
                         channel_restricted = True
                         break
 
@@ -921,11 +922,27 @@ class BotManager:
                             except Exception as album_err:
                                 err_str = str(album_err).encode("ascii", errors="ignore").decode("ascii")
                                 if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
-                                    logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on album {msg.id}: Channel '{source_title}' ({source_id}) restricts saving/forwarding content. Aborting entire channel immediately to prevent FloodWait!")
-                                    channel_restricted = True
-                                    job["failed"] += 1
-                                    update_progress(msg.id)
-                                    break
+                                    if is_teradb:
+                                        # In TeraDB: Send caption / link as text message instead of failing!
+                                        text_content = build_caption(msg.caption, source_id, source_title)
+                                        if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
+                                            try:
+                                                await client.send_message(target_id, text=text_content, disable_web_page_preview=False)
+                                                job["processed"] += 1
+                                                update_progress(msg.id)
+                                                logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/text from restricted album {msg.id} -> sent as text to TeraDB")
+                                                break
+                                            except Exception as fe:
+                                                logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
+                                        job["skipped"] += 1
+                                        update_progress(msg.id)
+                                        break
+                                    else:
+                                        logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on album {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
+                                        channel_restricted = True
+                                        job["failed"] += 1
+                                        update_progress(msg.id)
+                                        break
                                 elif "FloodWait" in err_str:
                                     logging.warning(f"[FLOOD WAIT] Generic FloodWait in album: {err_str}. Sleeping 20s...")
                                     await asyncio.sleep(20)
@@ -1179,11 +1196,27 @@ class BotManager:
                         except Exception as copy_err:
                             err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
                             if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
-                                logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on msg {msg.id}: Channel '{source_title}' ({source_id}) restricts saving/forwarding content. Aborting entire channel immediately to prevent FloodWait!")
-                                channel_restricted = True
-                                job["failed"] += 1
-                                update_progress(msg.id)
-                                break
+                                if is_teradb:
+                                    # In TeraDB: Send caption / link as clean text message instead of aborting!
+                                    text_content = build_caption(msg.caption, source_id, source_title)
+                                    if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
+                                        try:
+                                            await client.send_message(target_id, text=text_content, disable_web_page_preview=False)
+                                            job["processed"] += 1
+                                            update_progress(msg.id)
+                                            logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/caption from restricted msg {msg.id} -> sent as text to TeraDB")
+                                            break
+                                        except Exception as fe:
+                                            logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
+                                    job["skipped"] += 1
+                                    update_progress(msg.id)
+                                    break
+                                else:
+                                    logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on msg {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
+                                    channel_restricted = True
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                                    break
                             elif "FloodWait" in err_str:
                                 logging.warning(f"[FLOOD WAIT] Generic FloodWait detected: {err_str}. Sleeping 20s...")
                                 await asyncio.sleep(20)
@@ -1196,11 +1229,11 @@ class BotManager:
                                 logging.warning(f"[COPY ERR] Failed to copy msg {msg.id}: {copy_err}")
                                 break
 
-                    if channel_restricted:
+                    if channel_restricted and not is_teradb:
                         break
 
-                if channel_restricted:
-                    logging.warning(f"[RESTRICTED CHANNEL] Channel '{source_title}' ({source_id}) marked as restricted. Skipping permanently to protect account from FloodWait.")
+                if channel_restricted and not is_teradb:
+                    logging.warning(f"[RESTRICTED CHANNEL] VideoDB Channel '{source_title}' ({source_id}) marked as restricted in MongoDB. Skipping permanently.")
                     job["status"] = "restricted"
                     job["error"] = "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content"
                     self.folder_sync_status[source_id] = {
@@ -1343,12 +1376,15 @@ class BotManager:
 
                                         # Check if already completed or restricted in folder_sync_status or DB
                                         sync_state = self.folder_sync_status.get(full_cid, {})
-                                        if sync_state.get("status") not in ["completed", "restricted"]:
+                                        is_video_db = (tid == -1004401442087)
+                                        # Only videoDB treats 'restricted' as finished; TeraDB channels are always allowed to sync
+                                        is_sync_state_done = (sync_state.get("status") == "completed") or (is_video_db and sync_state.get("status") == "restricted")
+                                        if not is_sync_state_done:
                                             is_db_done = False
                                             if self.db_a is not None:
                                                 try:
                                                     doc = self.db_a.forward_progress.find_one({"chat_id": full_cid})
-                                                    if doc and doc.get("status") == "restricted":
+                                                    if is_video_db and doc and doc.get("status") == "restricted":
                                                         is_db_done = True
                                                         self.folder_sync_status[full_cid] = {
                                                             "status": "restricted",
