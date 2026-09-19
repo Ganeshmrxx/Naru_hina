@@ -286,6 +286,7 @@ class BotManager:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def _heartbeat_loop(self):
+        gc_ticks = 0
         while True:
             try:
                 now_str = datetime.now().isoformat()
@@ -298,6 +299,13 @@ class BotManager:
                             self.status[bot_id]["last_heartbeat"] = now_str
                     else:
                         self.status[bot_id]["is_running"] = False
+
+                # Periodic Garbage Collection every ~3 minutes (36 * 5s = 180s) to reclaim container RAM
+                gc_ticks += 1
+                if gc_ticks >= 36:
+                    gc_ticks = 0
+                    import gc
+                    gc.collect()
             except Exception:
                 pass
             await asyncio.sleep(5)

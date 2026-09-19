@@ -325,52 +325,59 @@ async def auto_forward(client, message):
     incoming_id = message.chat.id
     source_title = message.chat.title
 
-    # CRITICAL GUARD: Target storage channels must NEVER be processed by auto_forward!
+    # CRITICAL GUARD 1: Target storage channels must NEVER be processed by auto_forward!
     # DBXVideos (-1004401442087), DBXTera (-1004337870091), Mix (-1003253102275)
     TARGET_CHANNELS = {-1004401442087, -1004337870091, -1003253102275, 4401442087, 4337870091, 3253102275}
     clean_inc = int(str(incoming_id).replace("-100", "").replace("-", ""))
     if incoming_id in TARGET_CHANNELS or clean_inc in TARGET_CHANNELS:
         return
 
-    messageType = None
-
-    if message.video:
-        messageType = "video"
-    elif message.photo:
-        messageType = "photo"
-    elif message.text:
-        messageType = "text"
-    print("incoming", incoming_id, "type", messageType, "channele name ", source_title)
-
-    record = db["xDataChannels"].find_one({"_id": incoming_id})
-    target = None
-    tn = None
-
-    if record:
-        target = record.get("target")
-        tn = record.get("target_name")
-    else:
-        target, tn = await resolve_folder_target(client, incoming_id)
-
-    if not target or target == -1003253102275 or str(tn).lower() == "mix":
+    # CRITICAL GUARD 2: FAST MEDIA FILTER (Zero RAM/CPU Cost)
+    # Live Forwarder strictly copies videos and albums.
+    # Instantly drop pure text, single photos, stickers, and service updates without DB calls or logging.
+    is_album = bool(getattr(message, "media_group_id", None))
+    is_video = bool(message.video or (message.document and getattr(message.document, 'mime_type', '').startswith('video/')))
+    if not is_album and not is_video:
         return
 
-    print("Target Channel:", target, "Name:", tn)
+    # CRITICAL GUARD 3: FAST IGNORED CHANNELS CACHE
+    # If this chat was already confirmed not to be in videoDB / TeraDB, drop instantly
+    ignored_set = _folder_cache.setdefault("ignored", set())
+    if incoming_id in ignored_set or clean_inc in ignored_set:
+        return
+
+    # TARGET ROUTING: Check Folder 5 (videoDB) or Folder 6 (TeraDB) first
+    target, tn = await resolve_folder_target(client, incoming_id)
+    if not target:
+        record = db["xDataChannels"].find_one({"_id": incoming_id})
+        if record:
+            target = record.get("target")
+            tn = record.get("target_name")
+
+    if not target or target == -1003253102275 or str(tn).lower() == "mix":
+        if len(ignored_set) > 2000:
+            ignored_set.clear()
+        ignored_set.add(incoming_id)
+        ignored_set.add(clean_inc)
+        return
+
+    messageType = "album" if is_album else "video"
+    print(f"incoming {incoming_id} type {messageType} channel name {source_title} -> Target: {tn} ({target})")
 
     file_id = None
     duration = None
     size = None
     media_type = None
 
-    print("chattype", message.chat.type)
-
     # Rule 1: Grouped messages (albums) -> Copy entire media group together
-    if getattr(message, "media_group_id", None):
+    if is_album:
         group_id = message.media_group_id
         if "processed_groups" not in _folder_cache:
             _folder_cache["processed_groups"] = set()
         if group_id in _folder_cache["processed_groups"]:
             return
+        if len(_folder_cache["processed_groups"]) > 500:
+            _folder_cache["processed_groups"].clear()
         _folder_cache["processed_groups"].add(group_id)
 
         caption = build_caption(None, incoming_id, source_title or str(incoming_id))
@@ -394,22 +401,8 @@ async def auto_forward(client, message):
             print(f"❌ Error copying live media group {group_id}: {ge}")
             return
 
-    # Rule 2: Single photo -> Do not copy
-    if message.photo:
-        return
-
-    # Check chat type
-    if message.chat.type == ChatType.GROUP or message.chat.type == ChatType.SUPERGROUP:
-        # Only forward videos from groups
-        if message.video:
-            video_id = message.video.file_unique_id
-            media_type = "video"
-            duration = message.video.duration
-            size = message.video.file_size
-        else:
-            return  # skip non-video messages in group
-
-    elif message.chat.type == ChatType.CHANNEL:
+    # Check chat type for single video
+    if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL):
         if message.video:
             video_id = message.video.file_unique_id
             media_type = "video"
