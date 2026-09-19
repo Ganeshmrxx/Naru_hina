@@ -19,6 +19,7 @@ from BackupForwarderBot import BackupForwarderBot
 from GeneralDataModifierBot import GeneralDataModifierBot
 import re
 from pyrogram.errors import FloodWait, RPCError
+from pyrogram.types import InputMediaPhoto
 from pyrogram import raw, utils
 from pyrogram.raw.functions.messages import GetDialogFilters, UpdateDialogFilter
 from pyrogram.raw.types import DialogFilter
@@ -923,20 +924,45 @@ class BotManager:
                                 err_str = str(album_err).encode("ascii", errors="ignore").decode("ascii")
                                 if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
                                     if is_teradb:
-                                        # In TeraDB: Send caption / link as text message instead of failing!
-                                        text_content = build_caption(msg.caption, source_id, source_title)
-                                        if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
-                                            try:
-                                                await client.send_message(target_id, text=text_content, disable_web_page_preview=False)
-                                                job["processed"] += 1
+                                        # In TeraDB: Download and upload album photos via Userbot!
+                                        album_uploaded = False
+                                        try:
+                                            logging.info(f"[TERADB RESTRICTED ALBUM] Downloading photos in album {group_id} for TeraDB...")
+                                            media_msgs = await client.get_media_group(source_id, msg.id)
+                                            input_media = []
+                                            for idx, m in enumerate(media_msgs):
+                                                if m.photo:
+                                                    p_file = await client.download_media(m, in_memory=True)
+                                                    if p_file:
+                                                        if not getattr(p_file, 'name', None):
+                                                            p_file.name = f"album_{idx}.jpg"
+                                                        c = caption if idx == 0 else ""
+                                                        input_media.append(InputMediaPhoto(media=p_file, caption=c))
+                                            if input_media:
+                                                await client.send_media_group(chat_id=target_id, media=input_media)
+                                                album_uploaded = True
+                                                job["processed"] += len(input_media)
                                                 update_progress(msg.id)
-                                                logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/text from restricted album {msg.id} -> sent as text to TeraDB")
+                                                logging.info(f"[TERADB RESTRICTED ALBUM] Successfully downloaded & uploaded {len(input_media)} photos in album {group_id} to TeraDB!")
                                                 break
-                                            except Exception as fe:
-                                                logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
-                                        job["skipped"] += 1
-                                        update_progress(msg.id)
-                                        break
+                                        except Exception as ag_err:
+                                            logging.warning(f"[TERADB ALBUM DL/UP ERR] Failed to download/upload album {group_id}: {ag_err}")
+
+                                        if not album_uploaded:
+                                            # Fallback to text message
+                                            text_content = build_caption(msg.caption, source_id, source_title)
+                                            if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
+                                                try:
+                                                    await client.send_message(target_id, text=text_content, disable_web_page_preview=False)
+                                                    job["processed"] += 1
+                                                    update_progress(msg.id)
+                                                    logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/text from restricted album {msg.id} -> sent as text to TeraDB")
+                                                    break
+                                                except Exception as fe:
+                                                    logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
+                                            job["skipped"] += 1
+                                            update_progress(msg.id)
+                                            break
                                     else:
                                         logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on album {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
                                         channel_restricted = True
@@ -1197,20 +1223,43 @@ class BotManager:
                             err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
                             if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
                                 if is_teradb:
-                                    # In TeraDB: Send caption / link as clean text message instead of aborting!
-                                    text_content = build_caption(msg.caption, source_id, source_title)
-                                    if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
+                                    # In TeraDB: Download and upload photo via Userbot!
+                                    photo_uploaded = False
+                                    if msg.photo:
                                         try:
-                                            await client.send_message(target_id, text=text_content, disable_web_page_preview=False)
-                                            job["processed"] += 1
-                                            update_progress(msg.id)
-                                            logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/caption from restricted msg {msg.id} -> sent as text to TeraDB")
-                                            break
-                                        except Exception as fe:
-                                            logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
-                                    job["skipped"] += 1
-                                    update_progress(msg.id)
-                                    break
+                                            logging.info(f"[TERADB RESTRICTED] Downloading photo for msg {msg.id} to upload to TeraDB...")
+                                            photo_file = await client.download_media(msg, in_memory=True)
+                                            if photo_file:
+                                                if not getattr(photo_file, 'name', None):
+                                                    photo_file.name = "photo.jpg"
+                                                await client.send_photo(
+                                                    chat_id=target_id,
+                                                    photo=photo_file,
+                                                    caption=caption
+                                                )
+                                                photo_uploaded = True
+                                                job["processed"] += 1
+                                                update_progress(msg.id)
+                                                logging.info(f"[TERADB RESTRICTED] Successfully downloaded & uploaded photo msg {msg.id} to TeraDB!")
+                                                break
+                                        except Exception as pu_err:
+                                            logging.warning(f"[TERADB RESTRICTED] Photo download/upload failed for msg {msg.id}: {pu_err}. Falling back to text...")
+
+                                    if not photo_uploaded:
+                                        # In TeraDB: Send caption / link as clean text message instead of aborting!
+                                        text_content = build_caption(msg.caption, source_id, source_title)
+                                        if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
+                                            try:
+                                                await client.send_message(target_id, text=text_content, disable_web_page_preview=False)
+                                                job["processed"] += 1
+                                                update_progress(msg.id)
+                                                logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/caption from restricted msg {msg.id} -> sent as text to TeraDB")
+                                                break
+                                            except Exception as fe:
+                                                logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
+                                        job["skipped"] += 1
+                                        update_progress(msg.id)
+                                        break
                                 else:
                                     logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on msg {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
                                     channel_restricted = True

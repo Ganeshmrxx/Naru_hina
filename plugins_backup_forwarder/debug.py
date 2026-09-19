@@ -4,6 +4,7 @@ import time
 import random as rnd
 from pymongo import MongoClient
 from pyrogram import Client, filters
+from pyrogram.types import InputMediaPhoto
 from pyrogram.enums import ChatType
 from pyrogram.errors import FloodWait, RPCError
 
@@ -404,6 +405,32 @@ async def auto_forward(client, message):
                 print(f"❌ Error retrying album after FloodWait: {e2}")
             return
         except Exception as ge:
+            err_s = str(ge)
+            if ("CHAT_FORWARDS_RESTRICTED" in err_s or "restricts forwarding content" in err_s) and target == -1004337870091:
+                try:
+                    media_msgs = await client.get_media_group(incoming_id, message.id)
+                    input_media = []
+                    for idx, m in enumerate(media_msgs):
+                        if m.photo:
+                            p_file = await client.download_media(m, in_memory=True)
+                            if p_file:
+                                if not getattr(p_file, 'name', None):
+                                    p_file.name = f"album_{idx}.jpg"
+                                c = caption if idx == 0 else ""
+                                input_media.append(InputMediaPhoto(media=p_file, caption=c))
+                    if input_media:
+                        await client.send_media_group(chat_id=target, media=input_media)
+                        print(f"✔ [TERADB LIVE ALBUM BYPASS] Sent {len(input_media)} photos to {target}")
+                        return
+                    else:
+                        text_c = caption or (message.caption or "")
+                        if text_c:
+                            await client.send_message(chat_id=target, text=text_c, disable_web_page_preview=False)
+                            print(f"✔ [TERADB LIVE ALBUM TEXT BYPASS] Sent caption as text to {target}")
+                        return
+                except Exception as dl_e:
+                    print(f"❌ [TERADB LIVE ALBUM BYPASS ERR] {dl_e}")
+                    return
             print(f"❌ Error copying live media group {group_id}: {ge}")
             return
 
@@ -477,7 +504,34 @@ async def auto_forward(client, message):
         except Exception as retry_e:
             print(f"❌ Error retrying after FloodWait: {retry_e}")
     except Exception as e:
-        print(f"❌ Error copying message or saving data: {e}")
+        err_s = str(e)
+        if ("CHAT_FORWARDS_RESTRICTED" in err_s or "restricts forwarding content" in err_s) and target == -1004337870091:
+            try:
+                if message.photo:
+                    p_file = await client.download_media(message, in_memory=True)
+                    if p_file:
+                        if not getattr(p_file, 'name', None):
+                            p_file.name = "photo.jpg"
+                        sent_msg = await client.send_photo(chat_id=target, photo=p_file, caption=caption)
+                        print(f"✔ [TERADB LIVE PHOTO BYPASS] Sent photo to {target}, id: {sent_msg.id}")
+                        if video_id:
+                            db["xData"].insert_one({
+                                "_id": video_id,
+                                "channel_id": target,
+                                "message_id": sent_msg.id,
+                                "media_type": media_type,
+                                "duration": duration,
+                                "file_size": size
+                            })
+                else:
+                    text_c = caption or (message.caption or "")
+                    if text_c:
+                        sent_msg = await client.send_message(chat_id=target, text=text_c, disable_web_page_preview=False)
+                        print(f"✔ [TERADB LIVE TEXT BYPASS] Sent caption as text to {target}, id: {sent_msg.id}")
+            except Exception as dl_e:
+                print(f"❌ [TERADB LIVE PHOTO BYPASS ERR] {dl_e}")
+        else:
+            print(f"❌ Error copying message or saving data: {e}")
 
 
 """
