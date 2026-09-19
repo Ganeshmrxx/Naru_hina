@@ -19,6 +19,7 @@ from BackupForwarderBot import BackupForwarderBot
 from GeneralDataModifierBot import GeneralDataModifierBot
 import re
 from pyrogram.errors import FloodWait, RPCError
+from pyrogram import raw, utils
 from pyrogram.raw.functions.messages import GetDialogFilters, UpdateDialogFilter
 from pyrogram.raw.types import DialogFilter
 
@@ -523,6 +524,84 @@ class BotManager:
         asyncio.create_task(self._execute_bulk_forward(job_id, source_id, target_id, from_msg_id, to_msg_id, is_public=is_public))
         return job_info
 
+    async def iter_history_forward(self, client, chat_id: int, start_msg_id: int = 1, max_msg_id: int = 0):
+        """Yields messages from Telegram chat history in strict ascending chronological order (0 -> 10 / 1 -> N).
+        Uses MTProto raw GetHistory with negative offset to advance through chunks.
+        Automatically catches up to any new messages arriving in the channel during execution.
+        """
+        curr_id = max(1, start_msg_id)
+        chunk_size = 100
+        seen_ids = set()
+        
+        try:
+            peer = await client.resolve_peer(chat_id)
+        except Exception:
+            try:
+                await client.get_chat(chat_id)
+                peer = await client.resolve_peer(chat_id)
+            except Exception as pe:
+                logging.warning(f"[HISTORY ITER] Could not resolve peer for {chat_id}: {pe}")
+                return
+
+        while True:
+            chunk = []
+            try:
+                res = await client.invoke(
+                    raw.functions.messages.GetHistory(
+                        peer=peer,
+                        offset_id=curr_id,
+                        offset_date=0,
+                        add_offset=-chunk_size,
+                        limit=chunk_size,
+                        max_id=0,
+                        min_id=0,
+                        hash=0
+                    ),
+                    sleep_threshold=60
+                )
+                chunk = await utils.parse_messages(client, res, replies=0)
+            except FloodWait as fw:
+                wait_time = getattr(fw, 'value', 20) + 2
+                logging.warning(f"[HISTORY ITER] FloodWait {wait_time}s while fetching forward chunk for {chat_id} at #{curr_id}. Sleeping...")
+                await asyncio.sleep(wait_time)
+                continue
+            except Exception as e:
+                logging.warning(f"[HISTORY ITER] Error fetching forward chunk for {chat_id} at #{curr_id}: {e}")
+                break
+
+            if not chunk:
+                break
+
+            # Telegram returns newest first in chunk, reverse to get ascending chronological order
+            chunk.reverse()
+
+            new_in_chunk = []
+            for m in chunk:
+                if not getattr(m, 'id', None):
+                    continue
+                if m.id in seen_ids:
+                    continue
+                # If continuing from an ID > 1, do not re-yield curr_id or older
+                if curr_id > 1 and m.id <= curr_id:
+                    continue
+                seen_ids.add(m.id)
+                new_in_chunk.append(m)
+
+            if not new_in_chunk:
+                # Reached the latest message in channel
+                break
+
+            for m in new_in_chunk:
+                yield m
+                if max_msg_id > 0 and m.id >= max_msg_id:
+                    return
+
+            curr_id = chunk[-1].id
+
+            # Keep seen_ids bounded in memory
+            if len(seen_ids) > 5000:
+                seen_ids = {mid for mid in seen_ids if mid > curr_id - 2000}
+
     async def _execute_bulk_forward(self, job_id: str, source_id: int, target_id: int, from_msg_id: int, to_msg_id: int, is_public: Optional[bool] = None):
         job = self.forward_jobs[job_id]
         job["status"] = "queued"
@@ -600,6 +679,14 @@ class BotManager:
             except Exception as cnt_err:
                 logging.warning(f"[BULK FORWARD] History count timed out or unavailable for {source_id}: {cnt_err}")
 
+            if not total_msgs:
+                try:
+                    async for top_m in client.get_chat_history(source_id, limit=1):
+                        total_msgs = top_m.id
+                        break
+                except Exception:
+                    pass
+
             job["total"] = total_msgs
             job["remaining"] = total_msgs
             job["progress_pct"] = 0.0
@@ -613,6 +700,21 @@ class BotManager:
                 "progress_pct": 0.0
             })
 
+            # If from_msg_id not explicitly provided, resume from existing checkpoint in MongoDB
+            start_id = 1
+            if from_msg_id > 0:
+                start_id = from_msg_id
+            elif self.db_a is not None:
+                try:
+                    prog_doc = self.db_a.forward_progress.find_one({"chat_id": source_id})
+                    if prog_doc and prog_doc.get("total_copied", 0) > 0:
+                        saved_last_id = prog_doc.get("last_msg_id", 0)
+                        if saved_last_id > 1:
+                            start_id = saved_last_id
+                            logging.info(f"[BULK FORWARD] Resuming channel {source_id} from checkpoint msg #{start_id}")
+                except Exception as cp_err:
+                    logging.warning(f"[BULK FORWARD] Checkpoint read error for {source_id}: {cp_err}")
+
             def update_progress(curr_msg_id=None):
                 scanned = job["processed"] + job["skipped"] + job["failed"]
                 t = job.get("total", 0)
@@ -620,7 +722,7 @@ class BotManager:
                     job["remaining"] = max(0, t - scanned)
                     job["progress_pct"] = min(100.0, round((scanned / t) * 100, 1))
                 elif curr_msg_id:
-                    job["remaining"] = max(0, curr_msg_id)
+                    job["remaining"] = 0
                     job["progress_pct"] = 0.0
                 self.folder_sync_status[source_id].update({
                     "status": "syncing",
@@ -667,23 +769,17 @@ class BotManager:
                 logging.info(f"[BULK FORWARD] [PRIVATE LANE] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
 
             processed_groups = set()
-            first_msg_seen = False
             try:
-                async for msg in client.get_chat_history(source_id, offset_id=from_msg_id if from_msg_id > 0 else 0):
+                async for msg in self.iter_history_forward(client, source_id, start_msg_id=start_id, max_msg_id=to_msg_id):
                     if job["status"] == "stopped":
                         break
                     
                     job["last_activity"] = datetime.now().isoformat()
                     job["current_msg_id"] = msg.id
-
-                    if not first_msg_seen:
-                        first_msg_seen = True
-                        if not job.get("total") or job["total"] <= 0:
-                            job["total"] = msg.id
-                        update_progress(msg.id)
+                    update_progress(msg.id)
 
                     if to_msg_id > 0 and msg.id > to_msg_id:
-                        continue
+                        break
 
                     # ==============================================================
                     # RULE 1: GROUPED MESSAGES (ALBUMS) -> FULL GROUP COPIED TOGETHER
@@ -691,8 +787,6 @@ class BotManager:
                     if getattr(msg, "media_group_id", None):
                         group_id = msg.media_group_id
                         if group_id in processed_groups:
-                            job["skipped"] += 1
-                            update_progress(msg.id)
                             continue
                         processed_groups.add(group_id)
 
