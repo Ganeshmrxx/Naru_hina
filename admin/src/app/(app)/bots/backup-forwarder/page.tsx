@@ -7,14 +7,14 @@ import {
   Plus, CheckCircle2, ShieldCheck, ScrollText, Radio,
   Search, Users, Trash2, Folder, Film, Database,
   ArrowRight, Zap, Crown, Check, X, Sparkles, FolderCheck, MinusCircle, Globe,
-  Loader2, Clock
+  Loader2, Clock, Bot, UserCheck
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { toast } from '@/components/ui/Toast';
 import { api } from '@/lib/api';
-import { TelegramDialog } from '@/lib/types';
+import { TelegramDialog, SyncOverviewResponse } from '@/lib/types';
 
 // Deterministic color palette for Telegram-like channel avatars
 const AVATAR_GRADIENTS = [
@@ -45,6 +45,7 @@ export default function BackupForwarderDetailPage() {
   const [bot, setBot] = useState<Record<string, unknown> | null>(null);
   const [dialogs, setDialogs] = useState<TelegramDialog[]>([]);
   const [jobs, setJobs] = useState<Record<string, unknown>[]>([]);
+  const [syncOverview, setSyncOverview] = useState<SyncOverviewResponse | null>(null);
   const [logs, setLogs] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshingDialogs, setRefreshingDialogs] = useState(false);
@@ -53,7 +54,7 @@ export default function BackupForwarderDetailPage() {
 
   // Search & Filter state - Default to 'live' to show real-time active channels
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'videodb' | 'teradb' | 'publichub' | 'unassigned' | 'admin' | 'all'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'syncing' | 'completed' | 'videodb' | 'teradb' | 'publichub' | 'unassigned' | 'admin' | 'all'>('live');
 
   // Bot Stop/Restart Confirm state
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -67,17 +68,21 @@ export default function BackupForwarderDetailPage() {
   const fetchData = async (forceRefreshTelegram: boolean = false) => {
     try {
       if (forceRefreshTelegram) setRefreshingDialogs(true);
-      const [botData, dialogsData, jobsData, logsData] = await Promise.all([
+      const [botData, dialogsData, jobsData, logsData, overviewData] = await Promise.all([
         api.getBotStatus(botId).catch(() => ({})),
         api.getTelegramDialogs(forceRefreshTelegram).catch(() => []),
         api.getForwardJobs().catch(() => []),
         api.getBotLogs(botId, 30).catch(() => []),
+        api.getForwardingSyncOverview().catch(() => null),
       ]);
 
       setBot(botData);
       setDialogs(dialogsData || []);
       setJobs(jobsData || []);
       setLogs(logsData || []);
+      if (overviewData) {
+        setSyncOverview(overviewData);
+      }
     } catch (e) {
       console.error('Error fetching data:', e);
     } finally {
@@ -230,8 +235,16 @@ export default function BackupForwarderDetailPage() {
     }
   };
 
-  // Folder-based Counts
+  // Folder-based and Sync Counts
   const liveCount = useMemo(() => dialogs.filter((d) => d.is_live !== false).length, [dialogs]);
+  const activeAndQueuedCount = useMemo(
+    () => dialogs.filter((d) => (d.sync_status === 'syncing' || d.sync_status === 'queued') && d.is_live !== false).length,
+    [dialogs]
+  );
+  const completedCount = useMemo(
+    () => syncOverview?.total_completed_channels ?? dialogs.filter((d) => d.sync_status === 'completed' && d.is_live !== false).length,
+    [dialogs, syncOverview]
+  );
   const videoDBCount = useMemo(() => dialogs.filter((d) => d.folder_id === 5 && d.is_live !== false).length, [dialogs]);
   const teraDBCount = useMemo(() => dialogs.filter((d) => d.folder_id === 6 && d.is_live !== false).length, [dialogs]);
   const publicHubCount = useMemo(() => dialogs.filter((d) => d.folder_id === 4 && d.is_live !== false).length, [dialogs]);
@@ -243,6 +256,8 @@ export default function BackupForwarderDetailPage() {
     return dialogs.filter((d) => {
       // Tab filter
       if (activeTab === 'live' && d.is_live === false) return false;
+      if (activeTab === 'syncing' && d.sync_status !== 'syncing' && d.sync_status !== 'queued') return false;
+      if (activeTab === 'completed' && d.sync_status !== 'completed') return false;
       if (activeTab === 'videodb' && (d.folder_id !== 5 || d.is_live === false)) return false;
       if (activeTab === 'teradb' && (d.folder_id !== 6 || d.is_live === false)) return false;
       if (activeTab === 'publichub' && (d.folder_id !== 4 || d.is_live === false)) return false;
@@ -391,7 +406,7 @@ export default function BackupForwarderDetailPage() {
       </div>
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-3.5">
           <p className="text-xs text-gray-400">Total Live Channels</p>
           <div className="flex items-baseline gap-2 mt-1">
@@ -399,6 +414,32 @@ export default function BackupForwarderDetailPage() {
             <span className="text-[10px] text-emerald-400 font-medium">Real-Time</span>
           </div>
           <p className="text-[11px] text-gray-500 mt-1">Active in Telegram</p>
+        </div>
+
+        <div className="bg-[#111827] border border-emerald-500/30 rounded-xl p-3.5 bg-emerald-950/10">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-emerald-300 font-medium">Past Synced</p>
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+          </div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-emerald-400">{completedCount}</span>
+            <span className="text-[10px] text-gray-400">Done</span>
+          </div>
+          <p className="text-[11px] text-emerald-400/80 mt-1 font-mono font-semibold truncate">
+            {syncOverview?.total_copied_messages ? `${syncOverview.total_copied_messages.toLocaleString()} msgs copied` : 'History complete'}
+          </p>
+        </div>
+
+        <div className="bg-[#111827] border border-amber-500/30 rounded-xl p-3.5 bg-amber-950/10">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-amber-300 font-medium">In Sync Queue</p>
+            <Clock className="w-3.5 h-3.5 text-amber-400" />
+          </div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-mono font-bold text-amber-400">{syncOverview?.total_queued_channels ?? activeAndQueuedCount}</span>
+            <span className="text-[10px] text-gray-400">Backlog</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">Dual-Lane Queue</p>
         </div>
 
         <div className="bg-[#111827] border border-blue-500/30 rounded-xl p-3.5 bg-blue-950/10">
@@ -450,171 +491,231 @@ export default function BackupForwarderDetailPage() {
         </div>
       </div>
 
-      {/* Active History Jobs Banner (if any running or queued) */}
-      {runningJobs.length > 0 && (
-        <div className="bg-gradient-to-r from-blue-950/40 via-purple-950/30 to-[#111827] border border-blue-500/30 rounded-xl p-4 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Zap className="w-4 h-4 text-blue-400 animate-pulse" />
-              Active History Forwarding in Progress ({runningJobs.length})
-              <span className="text-[11px] font-normal text-gray-400">
-                (Parallel Lanes: 1 Public Bot + 1 Private Userbot)
-              </span>
-            </h3>
-            <span className="text-xs text-gray-400">Dual Lane Concurrency Active</span>
+      {/* Dual-Lane Real-Time History Forwarding & Queue Panel */}
+      <div className="bg-[#111827] border border-blue-500/30 rounded-xl p-5 space-y-4 shadow-lg shadow-blue-500/5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1f2937] pb-3">
+          <div className="flex items-center gap-2">
+            <Zap className="w-5 h-5 text-blue-400 animate-pulse" />
+            <h3 className="text-base font-bold text-white">Dual-Lane History Replicating Engine</h3>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 font-medium">
+              Simultaneous Concurrency
+            </span>
           </div>
-          <div className="space-y-2">
-            {runningJobs.map((j) => {
-              const isWorkerBots = j.worker_type === 'worker_bots' || j.is_public === true;
-              const isUserbot = j.worker_type === 'userbot' || (!j.is_public && j.is_public !== undefined);
-              const isJobRunning = j.status === 'running';
-
-              const total = (j.total as number) || 0;
-              const copied = (j.processed as number) || 0;
-              const skipped = (j.skipped as number) || 0;
-              const failed = (j.failed as number) || 0;
-              const remaining = typeof j.remaining === 'number'
-                ? (j.remaining as number)
-                : total > 0
-                ? Math.max(0, total - (copied + skipped + failed))
-                : 0;
-              const pct = typeof j.progress_pct === 'number' && j.progress_pct > 0
-                ? j.progress_pct
-                : total > 0
-                ? Math.min(100, Math.round(((copied + skipped + failed) / total) * 100))
-                : 0;
-
-              return (
-                <div
-                  key={j.job_id as string}
-                  className="bg-[#0d1117] border border-[#1f2937] rounded-xl p-3.5 space-y-3"
-                >
-                  {/* Header Row: Job ID, Worker Type, Status, Channel Name & Target */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="px-2 py-0.5 rounded text-[10px] uppercase font-mono font-bold tracking-wider bg-gray-800 text-gray-300">
-                        Job {j.job_id as string}
-                      </span>
-
-                      {/* Worker Type Badge */}
-                      {isWorkerBots ? (
-                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
-                          🤖 Worker Bot (Public)
-                        </span>
-                      ) : isUserbot ? (
-                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">
-                          👤 Userbot (Private)
-                        </span>
-                      ) : (
-                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-sans font-semibold bg-gray-800 text-gray-400 border border-gray-700 flex items-center gap-1">
-                          Detecting lane...
-                        </span>
-                      )}
-
-                      {/* Status Badge */}
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          isJobRunning
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                        }`}
-                      >
-                        {isJobRunning ? 'RUNNING' : 'QUEUED'}
-                      </span>
-
-                      {/* Channel title / IDs */}
-                      <div className="flex items-center gap-1.5 text-xs text-white">
-                        {j.source_name ? (
-                          <span className="font-semibold text-yellow-300">
-                            &quot;{String(j.source_name)}&quot;
-                          </span>
-                        ) : null}
-                        <span className="text-gray-400 font-mono">({j.source_id as number})</span>
-                        <span className="text-gray-500">➔</span>
-                        <span className="text-emerald-400 font-mono font-bold">{j.target_id as number}</span>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleStopJob(j.job_id as string)}
-                      className="px-3 py-1 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 text-xs font-medium transition-colors self-start sm:self-auto"
-                    >
-                      Stop Job
-                    </button>
-                  </div>
-
-                  {/* 5-Column Stats Cards: Total | Forwarded/Copied | Skipped | Bacha Hai (Remaining) | Completed % */}
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
-                    <div className="bg-[#161b22] border border-[#21262d] rounded-lg p-2.5">
-                      <div className="text-[11px] text-gray-400 flex items-center gap-1 font-medium">
-                        <span>📊 Total Messages</span>
-                      </div>
-                      <div className="text-base font-bold font-mono text-white mt-0.5">
-                        {total > 0 ? total.toLocaleString() : 'Estimating...'}
-                      </div>
-                      <div className="text-[10px] text-gray-500 mt-0.5">In source channel</div>
-                    </div>
-
-                    <div className="bg-emerald-950/20 border border-emerald-500/30 rounded-lg p-2.5">
-                      <div className="text-[11px] text-emerald-300 flex items-center gap-1 font-medium">
-                        <span>✅ Forwarded (Copied)</span>
-                      </div>
-                      <div className="text-base font-bold font-mono text-emerald-400 mt-0.5">
-                        {copied.toLocaleString()}
-                      </div>
-                      <div className="text-[10px] text-emerald-500/80 mt-0.5">Delivered to target</div>
-                    </div>
-
-                    <div className="bg-[#161b22] border border-[#21262d] rounded-lg p-2.5">
-                      <div className="text-[11px] text-gray-400 flex items-center gap-1 font-medium">
-                        <span>⏭️ Skipped</span>
-                      </div>
-                      <div className="text-base font-bold font-mono text-gray-300 mt-0.5">
-                        {skipped.toLocaleString()}
-                      </div>
-                      <div className="text-[10px] text-gray-500 mt-0.5">Photo / dup / no-media</div>
-                    </div>
-
-                    <div className="bg-amber-950/20 border border-amber-500/30 rounded-lg p-2.5">
-                      <div className="text-[11px] text-amber-300 flex items-center gap-1 font-medium">
-                        <span>⏳ Bacha Hai (Remaining)</span>
-                      </div>
-                      <div className="text-base font-bold font-mono text-amber-400 mt-0.5">
-                        {total > 0 ? remaining.toLocaleString() : 'Calculating...'}
-                      </div>
-                      <div className="text-[10px] text-amber-500/80 mt-0.5">Messages pending</div>
-                    </div>
-
-                    <div className="bg-blue-950/20 border border-blue-500/30 rounded-lg p-2.5">
-                      <div className="text-[11px] text-blue-300 flex items-center gap-1 font-medium">
-                        <span>📈 Progress</span>
-                      </div>
-                      <div className="text-base font-bold font-mono text-blue-400 mt-0.5">
-                        {total > 0 ? `${pct}%` : 'In Progress'}
-                      </div>
-                      <div className="text-[10px] text-blue-500/80 mt-0.5">Scan completion</div>
-                    </div>
-                  </div>
-
-                  {/* Animated Progress Bar */}
-                  <div className="space-y-1 pt-0.5">
-                    <div className="flex items-center justify-between text-[11px] text-gray-400 font-mono">
-                      <span>Current Msg ID: <strong className="text-gray-200">#{j.current_msg_id as number || 0}</strong></span>
-                      <span>{pct}% Scanned {total > 0 ? `(${((copied + skipped)).toLocaleString()} / ${total.toLocaleString()})` : ''}</span>
-                    </div>
-                    <div className="w-full bg-[#1f2937] h-2 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-blue-500 via-indigo-400 to-emerald-400 rounded-full transition-all duration-500"
-                        style={{ width: `${Math.max(2, Math.min(100, pct))}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+          <div className="text-xs text-gray-400 flex items-center gap-3">
+            <span>Completed: <strong className="text-emerald-400 font-mono">{completedCount}</strong></span>
+            <span>•</span>
+            <span>Queued: <strong className="text-amber-400 font-mono">{syncOverview?.total_queued_channels ?? activeAndQueuedCount}</strong></span>
           </div>
         </div>
-      )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Lane 1: 12 Worker Bots Pool (Public Channels) */}
+          <div className="bg-[#0d1117] border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between space-y-4 shadow-lg shadow-blue-500/5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400">
+                  <Bot className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    🤖 Worker Bots Pool Lane
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      12 Bots (Public)
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-gray-400">
+                    Active: <span className="text-blue-300 font-mono">{syncOverview?.bot_lane?.active_worker_bot || '@Xforward1_bot'}</span> | Rotates every 10 msgs
+                  </p>
+                </div>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold flex items-center gap-1.5 ${
+                syncOverview?.bot_lane?.status === 'running'
+                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                  : syncOverview?.bot_lane?.status === 'queued'
+                  ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                  : 'bg-gray-800 text-gray-400 border border-gray-700'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  syncOverview?.bot_lane?.status === 'running' ? 'bg-emerald-400 animate-ping' : 'bg-gray-500'
+                }`} />
+                {syncOverview?.bot_lane?.status === 'running' ? 'REPLICATING' : syncOverview?.bot_lane?.status === 'queued' ? 'QUEUED' : 'STANDBY'}
+              </span>
+            </div>
+
+            {/* Active Job in Bot Lane */}
+            {syncOverview?.bot_lane?.active_job ? (
+              <div className="bg-[#111827] border border-blue-500/40 rounded-lg p-3 space-y-2.5">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-white truncate max-w-[220px]">
+                      {syncOverview.bot_lane.active_job.source_name || `Channel ${syncOverview.bot_lane.active_job.source_id}`}
+                    </span>
+                    <span className="text-gray-400 font-mono text-[11px]">({syncOverview.bot_lane.active_job.source_id})</span>
+                  </div>
+                  <span className="text-emerald-400 text-[11px] font-bold font-mono">
+                    ➔ {syncOverview.bot_lane.active_job.target_name || (syncOverview.bot_lane.active_job.target_id === -1004401442087 ? 'DBXVideos' : 'DBXTera')}
+                  </span>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] font-mono">
+                    <span className="text-gray-400">
+                      Copied: <strong className="text-emerald-400 font-bold">{syncOverview.bot_lane.active_job.processed.toLocaleString()}</strong>
+                      {syncOverview.bot_lane.active_job.skipped > 0 && <span className="text-yellow-400"> | Skipped: {syncOverview.bot_lane.active_job.skipped}</span>}
+                    </span>
+                    <span className="text-blue-300 font-bold">
+                      {(syncOverview.bot_lane.active_job.progress_pct ?? 0) > 0 ? `${syncOverview.bot_lane.active_job.progress_pct}%` : `${syncOverview.bot_lane.active_job.processed} msgs`}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-[#1f2937] overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-blue-500 to-emerald-400 transition-all duration-300 rounded-full"
+                      style={{ width: `${Math.min(100, Math.max(syncOverview.bot_lane.active_job.progress_pct || 0, 5))}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-gray-500 font-mono">
+                    <span>Total: {syncOverview.bot_lane.active_job.total ? syncOverview.bot_lane.active_job.total.toLocaleString() : 'Scanning...'}</span>
+                    <span>Remaining: {typeof syncOverview.bot_lane.active_job.remaining === 'number' ? syncOverview.bot_lane.active_job.remaining.toLocaleString() : 'Calculating...'}</span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-[#111827]/50 border border-dashed border-[#1f2937] rounded-lg p-3 text-center text-xs text-gray-400 flex items-center justify-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-gray-500" />
+                <span>No active public channel copying. Standing by for Folder 5/6 public channels.</span>
+              </div>
+            )}
+
+            {/* Queued Public Channels */}
+            {syncOverview?.bot_lane?.queued_jobs && syncOverview.bot_lane.queued_jobs.length > 0 ? (
+              <div className="space-y-1.5 pt-1 border-t border-[#1f2937]">
+                <div className="flex items-center justify-between text-[11px] text-gray-400 font-medium">
+                  <span>⏳ Queued in Bot Lane ({syncOverview.bot_lane.queued_jobs.length})</span>
+                  <span className="text-blue-400 text-[10px]">Auto-starts next</span>
+                </div>
+                <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                  {syncOverview.bot_lane.queued_jobs.map((q, idx) => (
+                    <div key={q.job_id || idx} className="bg-[#111827] px-2.5 py-1 rounded text-xs flex items-center justify-between text-gray-300">
+                      <span className="truncate max-w-[220px]">
+                        <strong className="text-amber-400 font-mono text-[10px] mr-1">#{idx + 1}</strong>
+                        {q.source_name || String(q.source_id)}
+                      </span>
+                      <span className="text-[10px] text-gray-500 font-mono">➔ {q.target_name || 'Target'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="text-[11px] text-gray-500 italic pt-1 border-t border-[#1f2937]">
+                No public channels currently waiting in queue.
+              </div>
+            )}
+          </div>
+
+          {/* Lane 2: Userbot (Private Channels) */}
+          <div className="bg-[#0d1117] border border-purple-500/30 rounded-xl p-4 flex flex-col justify-between space-y-4 shadow-lg shadow-purple-500/5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400">
+                  <UserCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    👤 Userbot Lane
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      SESSION2 (Private)
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-gray-400">
+                    Account: <span className="text-purple-300 font-mono">userClient1</span> | FloodWait safe cooldown active
+                  </p>
+                </div>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold flex items-center gap-1.5 ${
+                syncOverview?.userbot_lane?.status === 'running'
+                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                  : syncOverview?.userbot_lane?.status === 'queued'
+                  ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                  : 'bg-gray-800 text-gray-400 border border-gray-700'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  syncOverview?.userbot_lane?.status === 'running' ? 'bg-emerald-400 animate-ping' : 'bg-gray-500'
+                }`} />
+                {syncOverview?.userbot_lane?.status === 'running' ? 'REPLICATING' : syncOverview?.userbot_lane?.status === 'queued' ? 'QUEUED' : 'STANDBY'}
+              </span>
+            </div>
+
+            {/* Active Job in Userbot Lane */}
+            {syncOverview?.userbot_lane?.active_job ? (
+              <div className="bg-[#111827] border border-purple-500/40 rounded-lg p-3 space-y-2.5">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-white truncate max-w-[220px]">
+                      {syncOverview.userbot_lane.active_job.source_name || `Channel ${syncOverview.userbot_lane.active_job.source_id}`}
+                    </span>
+                    <span className="text-gray-400 font-mono text-[11px]">({syncOverview.userbot_lane.active_job.source_id})</span>
+                  </div>
+                  <span className="text-emerald-400 text-[11px] font-bold font-mono">
+                    ➔ {syncOverview.userbot_lane.active_job.target_name || (syncOverview.userbot_lane.active_job.target_id === -1004401442087 ? 'DBXVideos' : 'DBXTera')}
+                  </span>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] font-mono">
+                    <span className="text-gray-400">
+                      Copied: <strong className="text-emerald-400 font-bold">{syncOverview.userbot_lane.active_job.processed.toLocaleString()}</strong>
+                      {syncOverview.userbot_lane.active_job.skipped > 0 && <span className="text-yellow-400"> | Skipped: {syncOverview.userbot_lane.active_job.skipped}</span>}
+                    </span>
+                    <span className="text-purple-300 font-bold">
+                      {(syncOverview.userbot_lane.active_job.progress_pct ?? 0) > 0 ? `${syncOverview.userbot_lane.active_job.progress_pct}%` : `${syncOverview.userbot_lane.active_job.processed} msgs`}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-[#1f2937] overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-500 to-emerald-400 transition-all duration-300 rounded-full"
+                      style={{ width: `${Math.min(100, Math.max(syncOverview.userbot_lane.active_job.progress_pct || 0, 5))}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-gray-500 font-mono">
+                    <span>Total: {syncOverview.userbot_lane.active_job.total ? syncOverview.userbot_lane.active_job.total.toLocaleString() : 'Scanning...'}</span>
+                    <span>Remaining: {typeof syncOverview.userbot_lane.active_job.remaining === 'number' ? syncOverview.userbot_lane.active_job.remaining.toLocaleString() : 'Calculating...'}</span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-[#111827]/50 border border-dashed border-[#1f2937] rounded-lg p-3 text-center text-xs text-gray-400 flex items-center justify-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-gray-500" />
+                <span>No active private channel copying. Standing by for Folder 5/6 private channels.</span>
+              </div>
+            )}
+
+            {/* Queued Private Channels */}
+            {syncOverview?.userbot_lane?.queued_jobs && syncOverview.userbot_lane.queued_jobs.length > 0 ? (
+              <div className="space-y-1.5 pt-1 border-t border-[#1f2937]">
+                <div className="flex items-center justify-between text-[11px] text-gray-400 font-medium">
+                  <span>⏳ Queued in Userbot Lane ({syncOverview.userbot_lane.queued_jobs.length})</span>
+                  <span className="text-purple-400 text-[10px]">Auto-starts next</span>
+                </div>
+                <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                  {syncOverview.userbot_lane.queued_jobs.map((q, idx) => (
+                    <div key={q.job_id || idx} className="bg-[#111827] px-2.5 py-1 rounded text-xs flex items-center justify-between text-gray-300">
+                      <span className="truncate max-w-[220px]">
+                        <strong className="text-amber-400 font-mono text-[10px] mr-1">#{idx + 1}</strong>
+                        {q.source_name || String(q.source_id)}
+                      </span>
+                      <span className="text-[10px] text-gray-500 font-mono">➔ {q.target_name || 'Target'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="text-[11px] text-gray-500 italic pt-1 border-t border-[#1f2937]">
+                No private channels currently waiting in queue.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Telegram Channel Router Main Area */}
       <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-5 space-y-4">
@@ -630,6 +731,26 @@ export default function BackupForwarderDetailPage() {
             >
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               Live Channels ({liveCount})
+            </button>
+
+            <button
+              onClick={() => setActiveTab('syncing')}
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'syncing' ? 'bg-amber-600 text-white border border-amber-500/40' : 'text-amber-400 hover:text-white'
+              }`}
+            >
+              <Clock className="w-3 h-3 text-amber-400" />
+              Replicating & Queued ({syncOverview?.total_queued_channels ?? activeAndQueuedCount})
+            </button>
+
+            <button
+              onClick={() => setActiveTab('completed')}
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'completed' ? 'bg-emerald-600 text-white border border-emerald-500/40' : 'text-emerald-400 hover:text-white'
+              }`}
+            >
+              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              Past Synced ({completedCount})
             </button>
 
             <button
@@ -808,18 +929,24 @@ export default function BackupForwarderDetailPage() {
                           <div className="flex flex-col gap-0.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs">
                             <div className="flex items-center gap-1.5 font-medium">
                               <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
-                              <span>Syncing ({channel.sync_processed || 0} Copied)</span>
+                              <span>{channel.worker_type === 'bot' ? '🤖 Replicating (Worker Bot)' : '👤 Replicating (Userbot)'}</span>
                             </div>
                             <div className="text-[10px] text-gray-400 font-mono">
-                              {channel.sync_total ? `Total: ${channel.sync_total.toLocaleString()} | ` : ''}
-                              {channel.sync_remaining ? `Bacha: ${channel.sync_remaining.toLocaleString()}` : ''}
+                              <span>Copied: {channel.sync_processed || 0} msgs</span>
+                              {channel.sync_total ? ` | Total: ${channel.sync_total.toLocaleString()}` : ''}
+                              {channel.sync_remaining ? ` | Bacha: ${channel.sync_remaining.toLocaleString()}` : ''}
                               {channel.sync_pct ? ` (${channel.sync_pct}%)` : ''}
                             </div>
+                          </div>
+                        ) : channel.sync_status === 'queued' ? (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-medium">
+                            <Clock className="w-3.5 h-3.5 text-amber-400" />
+                            <span>⏳ Queued {channel.queue_position ? `(#${channel.queue_position} in ${channel.queue_lane === 'bot' ? 'Bot Pool' : 'Userbot'})` : '(In Line)'}</span>
                           </div>
                         ) : channel.sync_status === 'completed' ? (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
                             <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Past Synced ({channel.sync_processed || 0})</span>
+                            <span>Past Synced ({channel.sync_processed || 0} msgs)</span>
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-medium">
@@ -862,18 +989,24 @@ export default function BackupForwarderDetailPage() {
                           <div className="flex flex-col gap-0.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs">
                             <div className="flex items-center gap-1.5 font-medium">
                               <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
-                              <span>Syncing ({channel.sync_processed || 0} Copied)</span>
+                              <span>{channel.worker_type === 'bot' ? '🤖 Replicating (Worker Bot)' : '👤 Replicating (Userbot)'}</span>
                             </div>
                             <div className="text-[10px] text-gray-400 font-mono">
-                              {channel.sync_total ? `Total: ${channel.sync_total.toLocaleString()} | ` : ''}
-                              {channel.sync_remaining ? `Bacha: ${channel.sync_remaining.toLocaleString()}` : ''}
+                              <span>Copied: {channel.sync_processed || 0} msgs</span>
+                              {channel.sync_total ? ` | Total: ${channel.sync_total.toLocaleString()}` : ''}
+                              {channel.sync_remaining ? ` | Bacha: ${channel.sync_remaining.toLocaleString()}` : ''}
                               {channel.sync_pct ? ` (${channel.sync_pct}%)` : ''}
                             </div>
+                          </div>
+                        ) : channel.sync_status === 'queued' ? (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-medium">
+                            <Clock className="w-3.5 h-3.5 text-amber-400" />
+                            <span>⏳ Queued {channel.queue_position ? `(#${channel.queue_position} in ${channel.queue_lane === 'bot' ? 'Bot Pool' : 'Userbot'})` : '(In Line)'}</span>
                           </div>
                         ) : channel.sync_status === 'completed' ? (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
                             <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Past Synced ({channel.sync_processed || 0})</span>
+                            <span>Past Synced ({channel.sync_processed || 0} msgs)</span>
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-medium">

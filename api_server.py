@@ -461,6 +461,10 @@ def stop_forward_job(job_id: str):
         raise HTTPException(status_code=404, detail=res["error"])
     return res
 
+@app.get("/api/forwarding/sync-overview", dependencies=[Depends(verify_token)])
+def get_forwarding_sync_overview():
+    return bot_manager.get_forwarding_sync_overview()
+
 # --- Channel Mappings (Cluster B - xDataChannels) ---
 class MappingCreateRequest(BaseModel):
     source_id: int

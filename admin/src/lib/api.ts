@@ -228,6 +228,10 @@ class ApiClient {
     return this.request<Record<string, unknown>>(`/api/forwarding/jobs/${jobId}/stop`, { method: 'POST' });
   }
 
+  async getForwardingSyncOverview() {
+    return this.request<import('./types').SyncOverviewResponse>('/api/forwarding/sync-overview');
+  }
+
   async copyMapping(sourceId: number) {
     return this.request<Record<string, unknown>>(`/api/mappings/${sourceId}/copy`, { method: 'POST' });
   }

@@ -141,6 +141,7 @@ class BotManager:
         self.background_tasks = {}
         self.forward_jobs = {}  # In-memory tracking for active bulk forward jobs
         self.folder_sync_status = {}  # chat_id -> {"status": "syncing"|"completed"|"queued", "processed": int}
+        self.auto_sync_pending = []  # List of channels currently queued for auto-sync
         self.dialogs_cache = []
         self.dialogs_cache_time = 0
         self.db_a = None
@@ -1133,10 +1134,28 @@ class BotManager:
                         active_cids = {j.get("source_id") for j in self.forward_jobs.values() if j.get("status") in ["running", "queued"]}
                         pending_channels = [c for c in channels_to_sync if c[0] not in active_cids]
 
+                        # Store detailed pending list for UI
+                        detailed_pending = []
                         for cid, tid, fname in pending_channels:
                             info = await self.get_channel_info(cid)
-                            c_is_public = info.get("is_public", False)
-                            c_title = info.get("title", str(cid))
+                            c_is_pub = info.get("is_public", False)
+                            c_tit = info.get("title", str(cid))
+                            detailed_pending.append({
+                                "channel_id": cid,
+                                "title": c_tit,
+                                "target_id": tid,
+                                "folder_name": fname,
+                                "is_public": c_is_pub,
+                                "lane": "bot_pool" if c_is_pub else "userbot"
+                            })
+                        self.auto_sync_pending = detailed_pending
+
+                        for p_item in detailed_pending:
+                            cid = p_item["channel_id"]
+                            tid = p_item["target_id"]
+                            fname = p_item["folder_name"]
+                            c_is_public = p_item["is_public"]
+                            c_title = p_item["title"]
 
                             if c_is_public and not has_running_public:
                                 logging.info(f"[AUTO SYNC] [PUBLIC LANE] Auto-launching Worker Bot sync for '{c_title}' ({cid}) -> {tid} ({fname})")
@@ -1161,6 +1180,137 @@ class BotManager:
             self.forward_jobs[job_id]["status"] = "stopped"
             return {"status": "Job stopped", "job_id": job_id}
         return {"error": "Job not found"}
+
+    def get_forwarding_sync_overview(self) -> dict:
+        """Returns consolidated dual-lane forwarding and queue overview."""
+        all_jobs = list(self.forward_jobs.values())
+
+        # 1. Bot Lane (Public Channels)
+        bot_lane_active = next(
+            (j for j in all_jobs if j.get("status") == "running" and (j.get("is_public") is True or j.get("worker_type") == "worker_bots")),
+            None
+        )
+        bot_lane_queued = [
+            j for j in all_jobs if j.get("status") == "queued" and (j.get("is_public") is True or j.get("worker_type") == "worker_bots")
+        ]
+
+        # 2. Userbot Lane (Private Channels)
+        userbot_lane_active = next(
+            (j for j in all_jobs if j.get("status") == "running" and (j.get("is_public") is False or j.get("worker_type") == "userbot")),
+            None
+        )
+        userbot_lane_queued = [
+            j for j in all_jobs if j.get("status") == "queued" and (j.get("is_public") is False or j.get("worker_type") == "userbot")
+        ]
+
+        # 3. Add auto-sync pending channels to queued lists if not already present in forward_jobs
+        for p in getattr(self, "auto_sync_pending", []):
+            cid = p.get("channel_id")
+            if not any(j.get("source_id") == cid for j in all_jobs if j.get("status") in ["running", "queued"]):
+                is_pub = p.get("is_public", False)
+                item = {
+                    "job_id": f"queue_{cid}",
+                    "source_id": cid,
+                    "source_name": p.get("title") or str(cid),
+                    "target_id": p.get("target_id"),
+                    "target_name": p.get("folder_name"),
+                    "is_public": is_pub,
+                    "worker_type": "worker_bots" if is_pub else "userbot",
+                    "worker_label": "🤖 Worker Bot Pool" if is_pub else "👤 Userbot (SESSION2)",
+                    "status": "queued",
+                    "processed": 0,
+                    "total": 0,
+                    "remaining": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "progress_pct": 0.0
+                }
+                if is_pub:
+                    bot_lane_queued.append(item)
+                else:
+                    userbot_lane_queued.append(item)
+
+        # 4. Completed Channels (MongoDB + In-Memory)
+        completed_from_db = []
+        if self.db_a is not None:
+            try:
+                for doc in self.db_a.forward_progress.find({"status": "completed"}):
+                    cid = doc.get("chat_id") or doc.get("source_id")
+                    if cid:
+                        tid = doc.get("target_id")
+                        tname = "DBXVideos" if tid == -1004401442087 else "DBXTera" if tid == -1004337870091 else str(tid)
+                        c_at = doc.get("completed_at")
+                        c_at_str = c_at.isoformat() if hasattr(c_at, "isoformat") else str(c_at or "")
+                        completed_from_db.append({
+                            "channel_id": cid,
+                            "channel_name": doc.get("channel_name") or doc.get("source_name") or str(cid),
+                            "target_id": tid,
+                            "target_name": tname,
+                            "total_copied": doc.get("total_copied", 0),
+                            "total_messages": doc.get("total_messages", 0),
+                            "completed_at": c_at_str
+                        })
+            except Exception as dbe:
+                logging.warning(f"Error fetching completed channels from DB: {dbe}")
+
+        completed_map = {c["channel_id"]: c for c in completed_from_db}
+        for j in all_jobs:
+            if j.get("status") == "completed":
+                cid = j.get("source_id")
+                if cid:
+                    tid = j.get("target_id")
+                    tname = "DBXVideos" if tid == -1004401442087 else "DBXTera" if tid == -1004337870091 else str(tid)
+                    completed_map[cid] = {
+                        "channel_id": cid,
+                        "channel_name": j.get("source_name", str(cid)),
+                        "target_id": tid,
+                        "target_name": tname,
+                        "total_copied": j.get("processed", 0),
+                        "total_messages": j.get("total", 0),
+                        "completed_at": j.get("completed_at", "")
+                    }
+
+        completed_list = list(completed_map.values())
+        total_copied_sum = sum(c.get("total_copied", 0) for c in completed_list)
+        if bot_lane_active:
+            total_copied_sum += bot_lane_active.get("processed", 0)
+        if userbot_lane_active:
+            total_copied_sum += userbot_lane_active.get("processed", 0)
+
+        # Worker bot info
+        active_bots = [b for b in self.worker_bots if getattr(b, "is_connected", False)]
+        active_name = "Worker Bot Pool"
+        if self.worker_bots:
+            curr_b = self.worker_bots[self.worker_bot_idx % len(self.worker_bots)]
+            me = getattr(curr_b, "me", None)
+            if me and getattr(me, "username", None):
+                active_name = f"@{me.username}"
+            else:
+                active_name = f"Worker_{self.worker_bot_idx + 1}"
+
+        return {
+            "bot_lane": {
+                "status": "running" if bot_lane_active else ("queued" if bot_lane_queued else "idle"),
+                "active_job": bot_lane_active,
+                "queued_jobs": bot_lane_queued,
+                "queued_count": len(bot_lane_queued),
+                "completed_count": len([c for c in completed_list if self.chat_info_cache.get(c["channel_id"], {}).get("is_public", False)]),
+                "active_worker_bot": active_name,
+                "worker_count": len(active_bots) or len(self.worker_bots) or 12
+            },
+            "userbot_lane": {
+                "status": "running" if userbot_lane_active else ("queued" if userbot_lane_queued else "idle"),
+                "active_job": userbot_lane_active,
+                "queued_jobs": userbot_lane_queued,
+                "queued_count": len(userbot_lane_queued),
+                "completed_count": len([c for c in completed_list if not self.chat_info_cache.get(c["channel_id"], {}).get("is_public", False)]),
+                "session_name": "userClient1 (SESSION2)"
+            },
+            "total_completed_channels": len(completed_list),
+            "total_queued_channels": len(bot_lane_queued) + len(userbot_lane_queued),
+            "total_copied_messages": total_copied_sum,
+            "completed_channels": completed_list
+        }
 
     async def get_telegram_dialogs(self, bot_id: str = "backup_forwarder", force_refresh: bool = False, db_b = None) -> list:
         cache_has_live = bool(self.dialogs_cache and any(d.get("is_live", False) for d in self.dialogs_cache))
@@ -1382,18 +1532,44 @@ class BotManager:
                     d["target_id"] = m.get("target")
                     d["target_name"] = m.get("target_name")
 
-            if self.db_a is not None:
-                try:
-                    for d in dialogs:
-                        sync_state = self.folder_sync_status.get(d["id"])
-                        if sync_state:
-                            d["sync_status"] = sync_state.get("status", d.get("sync_status", "idle"))
-                            d["sync_processed"] = sync_state.get("processed", d.get("sync_processed", 0))
-                            d["sync_total"] = sync_state.get("total", d.get("sync_total", 0))
-                            d["sync_remaining"] = sync_state.get("remaining", d.get("sync_remaining", 0))
-                            d["sync_pct"] = sync_state.get("progress_pct", d.get("sync_pct", 0))
-                        elif d.get("sync_status") != "syncing":
-                            p_doc = self.db_a.forward_progress.find_one({"chat_id": d["id"]})
+            # Active jobs mapping
+            active_jobs_by_source = {
+                j.get("source_id"): j 
+                for j in self.forward_jobs.values() 
+                if j.get("status") in ["running", "queued"]
+            }
+            pending_map = {
+                p["channel_id"]: (idx + 1, p) 
+                for idx, p in enumerate(getattr(self, "auto_sync_pending", []))
+            }
+
+            for d in dialogs:
+                cid = d["id"]
+                if cid in active_jobs_by_source:
+                    aj = active_jobs_by_source[cid]
+                    d["sync_status"] = aj.get("status", "syncing")
+                    d["worker_type"] = aj.get("worker_type", "worker_bots" if aj.get("is_public") else "userbot")
+                    d["sync_processed"] = aj.get("processed", 0)
+                    d["sync_total"] = aj.get("total", 0)
+                    d["sync_remaining"] = aj.get("remaining", 0)
+                    d["sync_pct"] = aj.get("progress_pct", 0.0)
+                elif cid in pending_map:
+                    pos, p = pending_map[cid]
+                    d["sync_status"] = "queued"
+                    d["queue_position"] = pos
+                    d["queue_lane"] = p.get("lane", "bot_pool" if p.get("is_public") else "userbot")
+                    d["worker_type"] = "worker_bots" if p.get("is_public") else "userbot"
+                else:
+                    sync_state = self.folder_sync_status.get(cid)
+                    if sync_state:
+                        d["sync_status"] = sync_state.get("status", d.get("sync_status", "idle"))
+                        d["sync_processed"] = sync_state.get("processed", d.get("sync_processed", 0))
+                        d["sync_total"] = sync_state.get("total", d.get("sync_total", 0))
+                        d["sync_remaining"] = sync_state.get("remaining", d.get("sync_remaining", 0))
+                        d["sync_pct"] = sync_state.get("progress_pct", d.get("sync_pct", 0))
+                    elif d.get("sync_status") != "syncing" and self.db_a is not None:
+                        try:
+                            p_doc = self.db_a.forward_progress.find_one({"chat_id": cid})
                             if p_doc:
                                 if p_doc.get("status") == "completed":
                                     d["sync_status"] = "completed"
@@ -1403,8 +1579,8 @@ class BotManager:
                                 d["sync_total"] = p_doc.get("total_messages", 0)
                                 d["sync_remaining"] = p_doc.get("remaining_messages", 0)
                                 d["sync_pct"] = p_doc.get("progress_pct", 0)
-                except Exception:
-                    pass
+                        except Exception:
+                            pass
 
             for src_id, m in mapped_map.items():
                 if src_id not in existing_ids:

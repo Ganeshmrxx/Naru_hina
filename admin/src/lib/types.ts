@@ -88,12 +88,14 @@ export interface TelegramDialog {
   target_id: number | null;
   target_name: string | null;
   is_live?: boolean;
-  live_status?: 'active' | 'dead' | string;
-  sync_status?: 'syncing' | 'completed' | 'idle' | string | null;
+  sync_status?: 'syncing' | 'completed' | 'queued' | 'idle' | string | null;
   sync_processed?: number;
   sync_total?: number;
   sync_remaining?: number;
   sync_pct?: number;
+  worker_type?: 'worker_bots' | 'userbot' | string;
+  queue_lane?: 'bot_pool' | 'userbot' | string;
+  queue_position?: number;
 }
 
 export interface TelegramFolderChannel {
@@ -202,6 +204,8 @@ export interface ForwardJob {
   source_id: number;
   source_name?: string;
   target_id: number;
+  target_name?: string;
+  folder_name?: string;
   status: 'running' | 'queued' | 'completed' | 'failed' | 'stopped' | string;
   is_public?: boolean;
   worker_type?: 'worker_bots' | 'userbot' | string;
@@ -218,3 +222,36 @@ export interface ForwardJob {
   error?: string | null;
 }
 
+export interface CompletedChannelItem {
+  channel_id: number;
+  channel_name: string;
+  target_id: number;
+  target_name: string;
+  total_copied: number;
+  total_messages?: number;
+  completed_at?: string;
+}
+
+export interface SyncOverviewResponse {
+  bot_lane: {
+    status: 'running' | 'queued' | 'idle' | string;
+    active_job: ForwardJob | null;
+    queued_jobs: ForwardJob[];
+    queued_count: number;
+    completed_count: number;
+    active_worker_bot: string;
+    worker_count: number;
+  };
+  userbot_lane: {
+    status: 'running' | 'queued' | 'idle' | string;
+    active_job: ForwardJob | null;
+    queued_jobs: ForwardJob[];
+    queued_count: number;
+    completed_count: number;
+    session_name: string;
+  };
+  total_completed_channels: number;
+  total_queued_channels: number;
+  total_copied_messages: number;
+  completed_channels: CompletedChannelItem[];
+}
