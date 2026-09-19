@@ -151,6 +151,7 @@ class BotManager:
         self._auto_folder_sync_task = None
         self._public_forward_lock = asyncio.Lock()
         self._private_forward_lock = asyncio.Lock()
+        self._dialogs_lock = asyncio.Lock()
         self.chat_info_cache = {}  # chat_id -> {"title": str, "username": str|None, "is_public": bool}
         self.worker_bots = []
         self.worker_bots_initialized = False
@@ -349,12 +350,13 @@ class BotManager:
         except Exception as e:
             err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
             if "AUTH_KEY_DUPLICATED" in err_msg:
-                logging.error(f"Duplicate auth key for {bot_id}: session used elsewhere", extra={"bot_id": bot_id})
-                self.status[bot_id]["last_error"] = "AUTH_KEY_DUPLICATED: Session is being used elsewhere"
+                logging.error(f"Duplicate auth key for {bot_id}: session used elsewhere. Please regenerate session at /session UI.", extra={"bot_id": bot_id})
+                self.status[bot_id]["last_error"] = "AUTH_KEY_DUPLICATED: Session used elsewhere. Regenerate via /session UI."
             else:
                 logging.error(f"Error running {bot_id}: {err_msg}", extra={"bot_id": bot_id})
                 self.status[bot_id]["last_error"] = err_msg
             self.status[bot_id]["is_running"] = False
+            bot_info["instance"] = None
 
     async def start_bot(self, bot_id: str) -> dict:
         if bot_id not in self.bots:
@@ -1443,27 +1445,33 @@ class BotManager:
                 self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
             return self.dialogs_cache
 
-        client = None
-        candidates = [cid for cid in [bot_id, "backup_forwarder", "movie_forwarder"] if cid in self.bots]
-        for candidate_id in candidates:
-            bot_entry = self.bots.get(candidate_id)
-            if bot_entry:
-                inst = bot_entry.get("instance")
-                if inst and getattr(inst, "is_connected", False):
-                    client = inst
-                    break
+        async with self._dialogs_lock:
+            cache_has_live = bool(self.dialogs_cache and any(d.get("is_live", False) for d in self.dialogs_cache))
+            if not force_refresh and cache_has_live and (time.time() - self.dialogs_cache_time < 300):
+                if db_b is not None:
+                    self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+                return self.dialogs_cache
 
-        if client is None and "backup_forwarder" in self.bots:
-            await self.start_bot("backup_forwarder")
-            await asyncio.sleep(2)
-            bot_entry = self.bots.get("backup_forwarder")
-            if bot_entry:
-                inst = bot_entry.get("instance")
-                if inst and getattr(inst, "is_connected", False):
-                    client = inst
+            client = None
+            candidates = [cid for cid in [bot_id, "backup_forwarder", "movie_forwarder"] if cid in self.bots]
+            for candidate_id in candidates:
+                bot_entry = self.bots.get(candidate_id)
+                if bot_entry:
+                    inst = bot_entry.get("instance")
+                    if inst and getattr(inst, "is_connected", False):
+                        client = inst
+                        break
 
-        dialogs = []
-        if client and getattr(client, "is_connected", False):
+            # If client is not connected, DO NOT auto-start in a GET endpoint!
+            # Return cached dialogs or empty list
+            if client is None or not getattr(client, "is_connected", False):
+                if self.dialogs_cache:
+                    if db_b is not None:
+                        self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+                    return self.dialogs_cache
+                return []
+
+            dialogs = []
             try:
                 from pyrogram.enums import ChatType
                 
@@ -1627,13 +1635,21 @@ class BotManager:
                             pass
 
             except Exception as e:
-                logging.error(f"Error fetching telegram dialogs: {e}")
+                logging.warning(f"Error fetching telegram dialogs: {e}")
+                if self.dialogs_cache:
+                    if db_b is not None:
+                        self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+                    return self.dialogs_cache
+                return []
 
-        if any(d.get("is_live", False) for d in dialogs):
-            self.dialogs_cache = dialogs
-            self.dialogs_cache_time = time.time()
+            if any(d.get("is_live", False) for d in dialogs):
+                self.dialogs_cache = dialogs
+                self.dialogs_cache_time = time.time()
 
-        return dialogs
+            if db_b is not None:
+                self._enrich_dialogs_with_db(self.dialogs_cache if self.dialogs_cache else dialogs, db_b)
+
+            return dialogs if dialogs else (self.dialogs_cache or [])
 
     def _enrich_dialogs_with_db(self, dialogs: list, db_b):
         try:
