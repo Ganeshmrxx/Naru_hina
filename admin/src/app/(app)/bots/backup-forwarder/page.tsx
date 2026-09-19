@@ -717,6 +717,90 @@ export default function BackupForwarderDetailPage() {
         </div>
       </div>
 
+      {/* Completed Channels History Section */}
+      {syncOverview?.completed_channels && syncOverview.completed_channels.length > 0 && (
+        <div className="bg-[#111827] border border-emerald-500/30 rounded-xl p-5 space-y-4 shadow-lg shadow-emerald-500/5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1f2937] pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  ✅ Completed Channels History (Past Synced)
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-medium">
+                    {syncOverview.completed_channels.length} Channels Done
+                  </span>
+                </h3>
+                <p className="text-[11px] text-gray-400">
+                  Full records from MongoDB: transferred messages, last message ID checkpoint & target routing
+                </p>
+              </div>
+            </div>
+            <div className="text-xs font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-3 py-1 rounded-lg">
+              Total Transferred: <strong>{syncOverview.total_copied_messages.toLocaleString()} msgs</strong>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {syncOverview.completed_channels.map((c) => (
+              <div
+                key={c.channel_id}
+                className="bg-[#0d1117] border border-[#1f2937] hover:border-emerald-500/40 rounded-xl p-3.5 flex flex-col justify-between space-y-3 transition-colors"
+              >
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-white truncate max-w-[200px]" title={c.channel_name}>
+                      {c.channel_name}
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                      c.target_id === -1004401442087
+                        ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                        : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                    }`}>
+                      ➔ {c.target_name || (c.target_id === -1004401442087 ? 'DBXVideos' : 'DBXTera')}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-gray-400 font-mono">
+                    ID: <code className="text-gray-300">{c.channel_id}</code>
+                  </div>
+                </div>
+
+                <div className="bg-[#111827] rounded-lg p-2.5 space-y-1.5 text-xs font-mono">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-gray-400">Transferred (Copied):</span>
+                    <strong className="text-emerald-400 font-bold">{c.total_copied.toLocaleString()} msgs</strong>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-gray-400">Last Msg ID:</span>
+                    <span className="text-white font-bold">#{c.last_msg_id || c.total_messages || '1'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-gray-500">
+                    <span>Total: {c.total_messages ? c.total_messages.toLocaleString() : '—'}</span>
+                    {typeof c.total_skipped === 'number' && (
+                      <span>Skipped: {c.total_skipped.toLocaleString()}</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1 border-t border-[#1f2937]/50 text-[11px]">
+                  <span className="text-gray-500 text-[10px]">
+                    {c.completed_at ? new Date(c.completed_at).toLocaleDateString() : 'Completed'}
+                  </span>
+                  <button
+                    onClick={() => handleResync(c.channel_id, c.channel_name)}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-[11px] font-medium transition-colors"
+                  >
+                    <RotateCw className="w-3 h-3" />
+                    <span>Re-Sync</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Telegram Channel Router Main Area */}
       <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-5 space-y-4">
         {/* Search & Tabs Controls */}
@@ -944,9 +1028,15 @@ export default function BackupForwarderDetailPage() {
                             <span>⏳ Queued {channel.queue_position ? `(#${channel.queue_position} in ${channel.queue_lane === 'bot' ? 'Bot Pool' : 'Userbot'})` : '(In Line)'}</span>
                           </div>
                         ) : channel.sync_status === 'completed' ? (
-                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Past Synced ({channel.sync_processed || 0} msgs)</span>
+                          <div className="flex flex-col gap-0.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Past Synced ({channel.sync_processed || 0} msgs)</span>
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-mono">
+                              Last Msg ID: <strong className="text-emerald-300">#{channel.last_msg_id || channel.sync_total || '1'}</strong>
+                              {channel.sync_total ? ` • Total: ${channel.sync_total.toLocaleString()}` : ''}
+                            </div>
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-medium">
@@ -1004,9 +1094,15 @@ export default function BackupForwarderDetailPage() {
                             <span>⏳ Queued {channel.queue_position ? `(#${channel.queue_position} in ${channel.queue_lane === 'bot' ? 'Bot Pool' : 'Userbot'})` : '(In Line)'}</span>
                           </div>
                         ) : channel.sync_status === 'completed' ? (
-                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Past Synced ({channel.sync_processed || 0} msgs)</span>
+                          <div className="flex flex-col gap-0.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Past Synced ({channel.sync_processed || 0} msgs)</span>
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-mono">
+                              Last Msg ID: <strong className="text-emerald-300">#{channel.last_msg_id || channel.sync_total || '1'}</strong>
+                              {channel.sync_total ? ` • Total: ${channel.sync_total.toLocaleString()}` : ''}
+                            </div>
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-medium">

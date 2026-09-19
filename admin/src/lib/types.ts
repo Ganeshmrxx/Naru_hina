@@ -96,6 +96,9 @@ export interface TelegramDialog {
   worker_type?: 'worker_bots' | 'userbot' | string;
   queue_lane?: 'bot_pool' | 'userbot' | string;
   queue_position?: number;
+  last_msg_id?: number;
+  total_skipped?: number;
+  completed_at?: string;
 }
 
 export interface TelegramFolderChannel {
@@ -229,6 +232,9 @@ export interface CompletedChannelItem {
   target_name: string;
   total_copied: number;
   total_messages?: number;
+  total_skipped?: number;
+  last_msg_id?: number;
+  folder_name?: string;
   completed_at?: string;
 }
 

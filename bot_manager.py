@@ -792,15 +792,28 @@ class BotManager:
                         continue
 
                     # ==============================================================
-                    # RULE 2: SINGLE PHOTO -> DO NOT COPY
+                    # RULE 2: SINGLE PHOTO & LINK HANDLING
                     # ==============================================================
-                    if msg.photo:
-                        job["skipped"] += 1
-                        update_progress(msg.id)
-                        continue
+                    is_teradb = (target_id == -1004337870091)
+                    caption_text = (msg.caption or "")
+                    body_text = (msg.text or "")
+                    has_link = bool(
+                        ("http" in caption_text.lower() or "tera" in caption_text.lower()) or
+                        ("http" in body_text.lower() or "tera" in body_text.lower())
+                    )
 
-                    is_media = bool(msg.video or msg.document)
-                    is_text = bool(msg.text and ("http" in msg.text or "tera" in msg.text.lower()))
+                    if msg.photo:
+                        # In TeraDB (or posts with link in caption), photos must be copied!
+                        if is_teradb or has_link:
+                            pass
+                        else:
+                            # In videoDB, single photos without videos are skipped
+                            job["skipped"] += 1
+                            update_progress(msg.id)
+                            continue
+
+                    is_media = bool(msg.video or msg.document or (msg.photo and (is_teradb or has_link)))
+                    is_text = bool(body_text and has_link)
 
                     if not (is_media or is_text):
                         job["skipped"] += 1
@@ -899,6 +912,8 @@ class BotManager:
                         file_id = getattr(msg.video, 'file_unique_id', None)
                     elif msg.document:
                         file_id = getattr(msg.document, 'file_unique_id', None)
+                    elif msg.photo:
+                        file_id = getattr(msg.photo, 'file_unique_id', None)
 
                     # Check duplicate in Cluster B xData
                     if file_id and self.db_b is not None:
@@ -1018,20 +1033,23 @@ class BotManager:
                                 break
 
                 if job["status"] != "stopped":
-                    job["status"] = "completed"
+                    is_genuine = (job["processed"] > 0) or (job.get("total", 0) == 0)
+                    job_final_status = "completed" if is_genuine else "failed"
+                    job["status"] = job_final_status
                     job["remaining"] = 0
-                    job["progress_pct"] = 100.0
+                    job["progress_pct"] = 100.0 if is_genuine else 0.0
                     self.folder_sync_status[source_id] = {
-                        "status": "completed",
+                        "status": job_final_status,
                         "processed": job["processed"],
                         "total": job.get("total", job["processed"]),
                         "remaining": 0,
                         "skipped": job["skipped"],
                         "failed": job["failed"],
-                        "progress_pct": 100.0,
+                        "last_msg_id": job.get("current_msg_id", 0),
+                        "progress_pct": 100.0 if is_genuine else 0.0,
                         "completed_at": datetime.now().isoformat()
                     }
-                    if self.db_a is not None:
+                    if is_genuine and self.db_a is not None:
                         try:
                             self.db_a.forward_progress.update_one(
                                 {"chat_id": source_id},
@@ -1119,11 +1137,17 @@ class BotManager:
                                                 try:
                                                     doc = self.db_a.forward_progress.find_one({"chat_id": full_cid})
                                                     if doc and doc.get("status") == "completed":
-                                                        is_db_done = True
-                                                        self.folder_sync_status[full_cid] = {
-                                                            "status": "completed",
-                                                            "processed": doc.get("total_copied", 0)
-                                                        }
+                                                        # Only consider completed if it actually copied messages or channel was empty!
+                                                        if doc.get("total_copied", 0) > 0 or doc.get("total_messages", 0) == 0:
+                                                            is_db_done = True
+                                                            self.folder_sync_status[full_cid] = {
+                                                                "status": "completed",
+                                                                "processed": doc.get("total_copied", 0),
+                                                                "last_msg_id": doc.get("last_msg_id", 0),
+                                                                "total": doc.get("total_messages", 0)
+                                                            }
+                                                        else:
+                                                            is_db_done = False
                                                 except Exception:
                                                     pass
 
@@ -1248,6 +1272,9 @@ class BotManager:
                             "target_name": tname,
                             "total_copied": doc.get("total_copied", 0),
                             "total_messages": doc.get("total_messages", 0),
+                            "total_skipped": doc.get("total_skipped", 0),
+                            "last_msg_id": doc.get("last_msg_id") or doc.get("total_messages", 0),
+                            "folder_name": "videoDB" if tid == -1004401442087 else "TeraDB" if tid == -1004337870091 else "Custom",
                             "completed_at": c_at_str
                         })
             except Exception as dbe:
@@ -1267,6 +1294,9 @@ class BotManager:
                         "target_name": tname,
                         "total_copied": j.get("processed", 0),
                         "total_messages": j.get("total", 0),
+                        "total_skipped": j.get("skipped", 0),
+                        "last_msg_id": j.get("current_msg_id", 0) or j.get("total", 0),
+                        "folder_name": "videoDB" if tid == -1004401442087 else "TeraDB" if tid == -1004337870091 else "Custom",
                         "completed_at": j.get("completed_at", "")
                     }
 
@@ -1579,6 +1609,9 @@ class BotManager:
                                 d["sync_total"] = p_doc.get("total_messages", 0)
                                 d["sync_remaining"] = p_doc.get("remaining_messages", 0)
                                 d["sync_pct"] = p_doc.get("progress_pct", 0)
+                                d["last_msg_id"] = p_doc.get("last_msg_id", 0)
+                                d["total_skipped"] = p_doc.get("total_skipped", 0)
+                                d["completed_at"] = str(p_doc.get("completed_at") or "")
                         except Exception:
                             pass
 

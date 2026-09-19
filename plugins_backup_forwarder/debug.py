@@ -332,12 +332,18 @@ async def auto_forward(client, message):
     if incoming_id in TARGET_CHANNELS or clean_inc in TARGET_CHANNELS:
         return
 
-    # CRITICAL GUARD 2: FAST MEDIA FILTER (Zero RAM/CPU Cost)
-    # Live Forwarder strictly copies videos and albums.
-    # Instantly drop pure text, single photos, stickers, and service updates without DB calls or logging.
+    # CRITICAL GUARD 2: FAST MEDIA & LINK FILTER (Zero RAM/CPU Cost)
+    # Live Forwarder copies:
+    # 1. Albums (media groups)
+    # 2. Videos / video documents
+    # 3. Posts with TeraBox links / URLs (for TeraDB)
+    has_link = bool(
+        (message.text and ("http" in message.text.lower() or "tera" in message.text.lower())) or
+        (message.caption and ("http" in message.caption.lower() or "tera" in message.caption.lower()))
+    )
     is_album = bool(getattr(message, "media_group_id", None))
     is_video = bool(message.video or (message.document and getattr(message.document, 'mime_type', '').startswith('video/')))
-    if not is_album and not is_video:
+    if not is_album and not is_video and not has_link:
         return
 
     # CRITICAL GUARD 3: FAST IGNORED CHANNELS CACHE
@@ -401,7 +407,7 @@ async def auto_forward(client, message):
             print(f"❌ Error copying live media group {group_id}: {ge}")
             return
 
-    # Check chat type for single video
+    # Check chat type for single video, photo with link, or text message with link
     if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL):
         if message.video:
             video_id = message.video.file_unique_id
@@ -413,6 +419,18 @@ async def auto_forward(client, message):
             media_type = "video"
             duration = 0
             size = message.document.file_size
+        elif message.photo and (target == -1004337870091 or has_link):
+            video_id = message.photo.file_unique_id
+            media_type = "photo"
+            duration = 0
+            size = message.photo.file_size
+        elif message.text and has_link:
+            text_to_send = build_text(message.text, incoming_id, source_title or str(incoming_id))
+            try:
+                await message.copy(chat_id=target)
+            except Exception:
+                await client.send_message(chat_id=target, text=text_to_send)
+            return
         else:
             return  # skip unsupported media
     else:
