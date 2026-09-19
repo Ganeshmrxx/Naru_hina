@@ -640,10 +640,12 @@ class BotManager:
         # Step 2: Determine if source channel is Public (has username) or Private, and fetch title
         source_username = None
         source_title = job.get("source_name") or str(source_id)
+        has_protected_content = False
         if source_id in self.chat_info_cache:
             info = self.chat_info_cache[source_id]
             source_title = info.get("title", source_title)
             source_username = info.get("username")
+            has_protected_content = bool(info.get("has_protected_content", False))
             if is_public is None:
                 is_public = info.get("is_public", False)
         else:
@@ -651,17 +653,54 @@ class BotManager:
                 c_info = await asyncio.wait_for(client.get_chat(source_id), timeout=8.0)
                 source_title = getattr(c_info, "title", "") or str(source_id)
                 source_username = getattr(c_info, "username", None)
+                has_protected_content = bool(getattr(c_info, "has_protected_content", False))
                 if is_public is None:
                     is_public = bool(source_username)
                 self.chat_info_cache[source_id] = {
                     "title": source_title,
                     "username": source_username,
-                    "is_public": is_public
+                    "is_public": is_public,
+                    "has_protected_content": has_protected_content
                 }
             except Exception as ce:
                 logging.warning(f"[BULK FORWARD] Could not determine chat info for {source_id}: {ce}")
                 if is_public is None:
                     is_public = False
+
+        if has_protected_content:
+            logging.warning(f"[RESTRICTED CHANNEL] Channel '{source_title}' ({source_id}) has 'Restrict saving content' enabled. Telegram prohibits copying from this channel. Skipping entire channel immediately to prevent FloodWait!")
+            job["status"] = "restricted"
+            job["error"] = "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content"
+            self.folder_sync_status[source_id] = {
+                "status": "restricted",
+                "processed": 0,
+                "total": 0,
+                "remaining": 0,
+                "skipped": 0,
+                "failed": 0,
+                "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                "completed_at": datetime.now().isoformat()
+            }
+            if self.db_a is not None:
+                try:
+                    self.db_a.forward_progress.update_one(
+                        {"chat_id": source_id},
+                        {"$set": {
+                            "chat_id": source_id,
+                            "source_id": source_id,
+                            "channel_id": source_id,
+                            "source_name": source_title,
+                            "channel_name": source_title,
+                            "status": "restricted",
+                            "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                            "completed_at": datetime.now(),
+                            "updated_at": datetime.now()
+                        }},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+            return
 
         job["source_name"] = source_title
         job["is_public"] = is_public
@@ -771,9 +810,10 @@ class BotManager:
                 logging.info(f"[BULK FORWARD] [PRIVATE LANE] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
 
             processed_groups = set()
+            channel_restricted = False
             try:
                 async for msg in self.iter_history_forward(client, source_id, start_msg_id=start_id, max_msg_id=to_msg_id):
-                    if job["status"] == "stopped":
+                    if job["status"] == "stopped" or channel_restricted:
                         break
                     
                     job["last_activity"] = datetime.now().isoformat()
@@ -781,6 +821,12 @@ class BotManager:
                     update_progress(msg.id)
 
                     if to_msg_id > 0 and msg.id > to_msg_id:
+                        break
+
+                    # Check if single message has content protection enabled
+                    if getattr(msg, "has_protected_content", False):
+                        logging.warning(f"[RESTRICTED CHANNEL] Message {msg.id} in '{source_title}' ({source_id}) has protected content enabled. Telegram prohibits copying from this channel. Aborting entire channel immediately to prevent FloodWait!")
+                        channel_restricted = True
                         break
 
                     # ==============================================================
@@ -874,7 +920,13 @@ class BotManager:
                                     update_progress(msg.id)
                             except Exception as album_err:
                                 err_str = str(album_err).encode("ascii", errors="ignore").decode("ascii")
-                                if "FloodWait" in err_str:
+                                if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
+                                    logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on album {msg.id}: Channel '{source_title}' ({source_id}) restricts saving/forwarding content. Aborting entire channel immediately to prevent FloodWait!")
+                                    channel_restricted = True
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                                    break
+                                elif "FloodWait" in err_str:
                                     logging.warning(f"[FLOOD WAIT] Generic FloodWait in album: {err_str}. Sleeping 20s...")
                                     await asyncio.sleep(20)
                                     if attempt == max_retries - 1:
@@ -885,6 +937,8 @@ class BotManager:
                                     update_progress(msg.id)
                                     logging.warning(f"[ALBUM ERR] Failed to copy group {group_id}: {album_err}")
                                     break
+                        if channel_restricted:
+                            break
                         continue
 
                     # ==============================================================
@@ -990,7 +1044,13 @@ class BotManager:
                                     update_progress(msg.id)
                             except Exception as text_err:
                                 err_str = str(text_err).encode("ascii", errors="ignore").decode("ascii")
-                                if "FloodWait" in err_str:
+                                if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
+                                    logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on text {msg.id}: Channel '{source_title}' ({source_id}) restricts saving/forwarding content. Aborting entire channel immediately to prevent FloodWait!")
+                                    channel_restricted = True
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                                    break
+                                elif "FloodWait" in err_str:
                                     logging.warning(f"[FLOOD WAIT] Generic FloodWait in text: {err_str}. Sleeping 20s...")
                                     await asyncio.sleep(20)
                                     if attempt == max_retries - 1:
@@ -1001,6 +1061,8 @@ class BotManager:
                                     update_progress(msg.id)
                                     logging.warning(f"[TEXT ERR] Failed to send text: {text_err}")
                                     break
+                        if channel_restricted:
+                            break
                         continue
 
                     file_id = None
@@ -1116,7 +1178,13 @@ class BotManager:
                                 update_progress(msg.id)
                         except Exception as copy_err:
                             err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
-                            if "FloodWait" in err_str:
+                            if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
+                                logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on msg {msg.id}: Channel '{source_title}' ({source_id}) restricts saving/forwarding content. Aborting entire channel immediately to prevent FloodWait!")
+                                channel_restricted = True
+                                job["failed"] += 1
+                                update_progress(msg.id)
+                                break
+                            elif "FloodWait" in err_str:
                                 logging.warning(f"[FLOOD WAIT] Generic FloodWait detected: {err_str}. Sleeping 20s...")
                                 await asyncio.sleep(20)
                                 if attempt == max_retries - 1:
@@ -1127,6 +1195,54 @@ class BotManager:
                                 update_progress(msg.id)
                                 logging.warning(f"[COPY ERR] Failed to copy msg {msg.id}: {copy_err}")
                                 break
+
+                    if channel_restricted:
+                        break
+
+                if channel_restricted:
+                    logging.warning(f"[RESTRICTED CHANNEL] Channel '{source_title}' ({source_id}) marked as restricted. Skipping permanently to protect account from FloodWait.")
+                    job["status"] = "restricted"
+                    job["error"] = "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content"
+                    self.folder_sync_status[source_id] = {
+                        "status": "restricted",
+                        "processed": job["processed"],
+                        "total": job.get("total", job["processed"]),
+                        "remaining": 0,
+                        "skipped": job["skipped"],
+                        "failed": job["failed"],
+                        "last_msg_id": job.get("current_msg_id", 0),
+                        "progress_pct": 0.0,
+                        "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                        "completed_at": datetime.now().isoformat()
+                    }
+                    if self.db_a is not None:
+                        try:
+                            self.db_a.forward_progress.update_one(
+                                {"chat_id": source_id},
+                                {"$set": {
+                                    "chat_id": source_id,
+                                    "source_id": source_id,
+                                    "channel_id": source_id,
+                                    "source_name": source_title,
+                                    "channel_name": source_title,
+                                    "status": "restricted",
+                                    "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                                    "total_messages": job.get("total", job["processed"]),
+                                    "total_copied": job["processed"],
+                                    "total_skipped": job["skipped"],
+                                    "total_failed": job["failed"],
+                                    "remaining_messages": 0,
+                                    "progress_pct": 0.0,
+                                    "last_msg_id": job.get("current_msg_id", 0),
+                                    "target_id": target_id,
+                                    "completed_at": datetime.now(),
+                                    "updated_at": datetime.now()
+                                }},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+                    return
 
                 if job["status"] != "stopped":
                     is_genuine = (job["processed"] > 0) or (job.get("total", 0) == 0)
@@ -1225,14 +1341,23 @@ class BotManager:
                                         clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
                                         full_cid = int(f"-100{clean_cid}")
 
-                                        # Check if already completed in folder_sync_status or DB
+                                        # Check if already completed or restricted in folder_sync_status or DB
                                         sync_state = self.folder_sync_status.get(full_cid, {})
-                                        if sync_state.get("status") != "completed":
+                                        if sync_state.get("status") not in ["completed", "restricted"]:
                                             is_db_done = False
                                             if self.db_a is not None:
                                                 try:
                                                     doc = self.db_a.forward_progress.find_one({"chat_id": full_cid})
-                                                    if doc and doc.get("status") == "completed":
+                                                    if doc and doc.get("status") == "restricted":
+                                                        is_db_done = True
+                                                        self.folder_sync_status[full_cid] = {
+                                                            "status": "restricted",
+                                                            "processed": doc.get("total_copied", 0),
+                                                            "last_msg_id": doc.get("last_msg_id", 0),
+                                                            "total": doc.get("total_messages", 0),
+                                                            "error": doc.get("error", "CHAT_FORWARDS_RESTRICTED")
+                                                        }
+                                                    elif doc and doc.get("status") == "completed":
                                                         # Only consider completed if it actually copied messages or channel was empty!
                                                         if doc.get("total_copied", 0) > 0 or doc.get("total_messages", 0) == 0:
                                                             is_db_done = True
