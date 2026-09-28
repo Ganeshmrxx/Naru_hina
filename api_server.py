@@ -566,16 +566,9 @@ async def sync_telegram_history(source_id: int):
         if mapping:
             target_id = mapping.get("target")
 
-    # If not found in DB mappings, check Telegram Folders dynamically
+    # If not found in DB mappings or folders, use universal auto-routing (target_id = 0)
     if not target_id:
-        dialogs = await bot_manager.get_telegram_dialogs(bot_id="backup_forwarder")
-        for d in dialogs:
-            if d.get("id") == source_id:
-                target_id = d.get("target_id")
-                break
-
-    if not target_id:
-        raise HTTPException(status_code=404, detail="Target channel could not be determined. Please ensure the channel is inside videoDB (Folder 5) or TeraDB (Folder 6).")
+        target_id = 0
 
     job = await bot_manager.start_bulk_forward_job(source_id=source_id, target_id=target_id)
     return job

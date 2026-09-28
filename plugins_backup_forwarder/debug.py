@@ -9,7 +9,77 @@ from pyrogram.enums import ChatType
 from pyrogram.errors import FloodWait, RPCError
 
 # Folder targets cache (cached for 5 minutes)
-_folder_cache = {"time": 0, 5: set(), 6: set()}
+_folder_cache = {"time": 0, 5: set(), 6: set(), "admin_chats": set()}
+
+VIDEO_TARGET = -1004401442087   # DBXVideos
+TERA_TARGET  = -1004337870091   # DBXTera
+MIX_TARGET   = -1003253102275   # Mix (ignored)
+TARGET_CHANNELS = {VIDEO_TARGET, TERA_TARGET, MIX_TARGET,
+                   4401442087, 4337870091, 3253102275}
+
+TERABOX_KEYWORDS = [
+    "terabox", "tera box", "teraboxapp", "1024tera",
+    "teraboxlink", "terashare", "freeterabox"
+]
+TERABOX_DOMAINS = [
+    "terabox.com", "teraboxapp.com", "1024terabox.com",
+    "terafileshare.com", "terasharelink.com", "momerybox.com",
+    "4funbox.com", "mirrobox.com", "nephobox.com",
+    "freeterabox.com", "tboxlink.com"
+]
+
+def is_terabox_content(msg):
+    text = ((getattr(msg, 'caption', None) or '') + ' ' + (getattr(msg, 'text', None) or '')).lower()
+    if not text.strip():
+        return False
+    for kw in TERABOX_KEYWORDS:
+        if kw in text:
+            return True
+    for domain in TERABOX_DOMAINS:
+        if domain in text:
+            return True
+    return False
+
+def is_video_message(msg):
+    if msg.video:
+        return True
+    if msg.document and getattr(msg.document, 'mime_type', '').startswith('video/'):
+        return True
+    return False
+
+def get_live_auto_target(msg):
+    """Determine live auto target based on user rules:
+    - Skip group photos; only videos in group/supergroup
+    - Videos with TeraBox link -> DBXTera
+    - Videos without TeraBox link -> DBXVideos
+    - Channel photos with TeraBox link -> DBXTera
+    - Albums: if TeraBox link -> DBXTera else if has video -> DBXVideos
+    - Otherwise -> None (skip)
+    """
+    is_group = msg.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+    tera = is_terabox_content(msg)
+    is_vid = is_video_message(msg)
+    is_photo = bool(msg.photo)
+    is_album = bool(getattr(msg, "media_group_id", None))
+
+    if is_album:
+        if tera:
+            return TERA_TARGET, "DBXTera"
+        if is_vid:
+            return VIDEO_TARGET, "DBXVideos"
+        if is_photo and not is_group:
+            return None, None
+        return (VIDEO_TARGET, "DBXVideos") if is_vid else (None, None)
+
+    if is_vid:
+        return (TERA_TARGET, "DBXTera") if tera else (VIDEO_TARGET, "DBXVideos")
+
+    if is_photo:
+        if is_group:
+            return None, None
+        return (TERA_TARGET, "DBXTera") if tera else (None, None)
+
+    return None, None
 
 async def resolve_folder_target(client, incoming_id):
     now = time.time()
@@ -49,8 +119,14 @@ async def resolve_folder_target(client, incoming_id):
         return -1004337870091, "DBXTera"
     return None, None
 
-def build_caption(original_caption, chat_id, chat_title):
-    footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}"
+def build_caption(original_caption, chat_id, chat_title, username=None):
+    clean_id = str(chat_id).replace("-100", "").replace("-", "")
+    if username:
+        user_tag = f"@{username.lstrip('@')}"
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {user_tag}\nchannel link = https://t.me/{username.lstrip('@')}"
+    else:
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}\nchannel link = https://t.me/c/{clean_id}/1"
+
     if not original_caption:
         return footer.strip()
     max_orig_len = 1024 - len(footer) - 5
@@ -58,8 +134,14 @@ def build_caption(original_caption, chat_id, chat_title):
         original_caption = original_caption[:max_orig_len] + "..."
     return f"{original_caption}{footer}"
 
-def build_text(original_text, chat_id, chat_title):
-    footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}"
+def build_text(original_text, chat_id, chat_title, username=None):
+    clean_id = str(chat_id).replace("-100", "").replace("-", "")
+    if username:
+        user_tag = f"@{username.lstrip('@')}"
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {user_tag}\nchannel link = https://t.me/{username.lstrip('@')}"
+    else:
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}\nchannel link = https://t.me/c/{clean_id}/1"
+
     if not original_text:
         return footer.strip()
     max_orig_len = 4096 - len(footer) - 5
@@ -324,57 +406,46 @@ async def detect_and_save_mapping(client, message):
 @Client.on_message(filters.incoming & (filters.group | filters.channel))
 async def auto_forward(client, message):
     incoming_id = message.chat.id
-    source_title = message.chat.title
+    source_title = getattr(message.chat, "title", str(incoming_id))
 
     # CRITICAL GUARD 1: Target storage channels must NEVER be processed by auto_forward!
-    # DBXVideos (-1004401442087), DBXTera (-1004337870091), Mix (-1003253102275)
-    TARGET_CHANNELS = {-1004401442087, -1004337870091, -1003253102275, 4401442087, 4337870091, 3253102275}
     clean_inc = int(str(incoming_id).replace("-100", "").replace("-", ""))
     if incoming_id in TARGET_CHANNELS or clean_inc in TARGET_CHANNELS:
         return
 
-    # CRITICAL GUARD 2: FAST MEDIA & LINK FILTER (Zero RAM/CPU Cost)
-    # Live Forwarder copies:
-    # 1. Albums (media groups)
-    # 2. Videos / video documents
-    # 3. Posts with TeraBox links / URLs (for TeraDB)
-    has_link = bool(
-        (message.text and ("http" in message.text.lower() or "tera" in message.text.lower())) or
-        (message.caption and ("http" in message.caption.lower() or "tera" in message.caption.lower()))
-    )
-    is_album = bool(getattr(message, "media_group_id", None))
-    is_video = bool(message.video or (message.document and getattr(message.document, 'mime_type', '').startswith('video/')))
-    if not is_album and not is_video and not has_link:
+    # CRITICAL GUARD 2: SKIP ADMIN / CREATOR CHANNELS
+    # Check cached admin status or resolve via chat permissions
+    admin_chats = _folder_cache.setdefault("admin_chats", set())
+    if incoming_id in admin_chats or clean_inc in admin_chats:
         return
 
-    # CRITICAL GUARD 3: FAST IGNORED CHANNELS CACHE
-    # If this chat was already confirmed not to be in videoDB / TeraDB, drop instantly
-    ignored_set = _folder_cache.setdefault("ignored", set())
-    if incoming_id in ignored_set or clean_inc in ignored_set:
+    chat = message.chat
+    is_creator = bool(getattr(chat, "is_creator", False))
+    admin_rights = getattr(chat, "admin_rights", None)
+    if is_creator or (admin_rights is not None):
+        admin_chats.add(incoming_id)
+        admin_chats.add(clean_inc)
         return
 
-    # TARGET ROUTING: Check Folder 5 (videoDB) or Folder 6 (TeraDB) first
-    target, tn = await resolve_folder_target(client, incoming_id)
+    # CRITICAL GUARD 3: SKIP KNOWN RESTRICTED VIDEODB CHANNELS
+    restricted_chats = _folder_cache.setdefault("restricted_chats", set())
+    if incoming_id in restricted_chats or clean_inc in restricted_chats:
+        return
+
+    # CRITICAL GUARD 4: UNIVERSAL CONTENT-BASED AUTO ROUTER
+    # - Group: only videos (photos skipped)
+    # - Videos with TeraBox link -> DBXTera
+    # - Videos without TeraBox link -> DBXVideos
+    # - Channel photos with TeraBox link -> DBXTera
+    # - Text-only -> skipped
+    target, tn = get_live_auto_target(message)
     if not target:
-        record = db["xDataChannels"].find_one({"_id": incoming_id})
-        if record:
-            target = record.get("target")
-            tn = record.get("target_name")
-
-    if not target or target == -1003253102275 or str(tn).lower() == "mix":
-        if len(ignored_set) > 2000:
-            ignored_set.clear()
-        ignored_set.add(incoming_id)
-        ignored_set.add(clean_inc)
         return
 
-    messageType = "album" if is_album else "video"
-    print(f"incoming {incoming_id} type {messageType} channel name {source_title} -> Target: {tn} ({target})")
-
-    file_id = None
-    duration = None
-    size = None
-    media_type = None
+    source_username = getattr(message.chat, "username", None)
+    is_album = bool(getattr(message, "media_group_id", None))
+    messageType = "album" if is_album else ("video" if is_video_message(message) else "photo")
+    print(f"incoming {incoming_id} type {messageType} channel name '{source_title}' -> Target: {tn} ({target})")
 
     # Rule 1: Grouped messages (albums) -> Copy entire media group together
     if is_album:
@@ -387,7 +458,7 @@ async def auto_forward(client, message):
             _folder_cache["processed_groups"].clear()
         _folder_cache["processed_groups"].add(group_id)
 
-        caption = build_caption(None, incoming_id, source_title or str(incoming_id))
+        caption = build_caption(None, incoming_id, source_title or str(incoming_id), username=source_username)
         try:
             copied_group = await asyncio.wait_for(
                 client.copy_media_group(chat_id=target, from_chat_id=incoming_id, message_id=message.id, captions=caption),
@@ -406,7 +477,7 @@ async def auto_forward(client, message):
             return
         except Exception as ge:
             err_s = str(ge)
-            if ("CHAT_FORWARDS_RESTRICTED" in err_s or "restricts forwarding content" in err_s) and target == -1004337870091:
+            if ("CHAT_FORWARDS_RESTRICTED" in err_s or "restricts forwarding content" in err_s) and target == TERA_TARGET:
                 try:
                     media_msgs = await client.get_media_group(incoming_id, message.id)
                     input_media = []
@@ -434,34 +505,36 @@ async def auto_forward(client, message):
             print(f"❌ Error copying live media group {group_id}: {ge}")
             return
 
-    # Check chat type for single video, photo with link, or text message with link
-    if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL):
-        if message.video:
-            video_id = message.video.file_unique_id
-            media_type = "video"
-            duration = message.video.duration
-            size = message.video.file_size
-        elif message.document and getattr(message.document, 'mime_type', '').startswith('video/'):
-            video_id = message.document.file_unique_id
-            media_type = "video"
-            duration = 0
-            size = message.document.file_size
-        elif message.photo and (target == -1004337870091 or has_link):
-            video_id = message.photo.file_unique_id
-            media_type = "photo"
-            duration = 0
-            size = message.photo.file_size
-        else:
-            return  # skip unsupported media
-    else:
-        return  # skip other chat types
+    # Single media processing
+    file_id = None
+    duration = None
+    size = None
+    media_type = None
 
-    if db["xData"].find_one({"_id": video_id}):
-        print(f"⚠ File ID already exists in DB, skipping: {video_id}")
+    if message.video:
+        file_id = message.video.file_unique_id
+        media_type = "video"
+        duration = message.video.duration
+        size = message.video.file_size
+    elif message.document and getattr(message.document, 'mime_type', '').startswith('video/'):
+        file_id = message.document.file_unique_id
+        media_type = "video"
+        duration = 0
+        size = message.document.file_size
+    elif message.photo:
+        file_id = message.photo.file_unique_id
+        media_type = "photo"
+        duration = 0
+        size = message.photo.file_size
+    else:
         return
 
+    if file_id and db["xData"].find_one({"_id": file_id}):
+        print(f"⚠ File ID already exists in DB, skipping: {file_id}")
+        return
+
+    caption = build_caption(message.caption, incoming_id, source_title or str(incoming_id), username=source_username)
     try:
-        caption = build_caption(message.caption, incoming_id, source_title or str(incoming_id))
         copied_msg = await asyncio.wait_for(
             message.copy(chat_id=target, caption=caption),
             timeout=15.0
@@ -469,15 +542,16 @@ async def auto_forward(client, message):
         print(f"✔ Copied to {target}, message ID: {copied_msg.id}")
 
         # Insert metadata into DB
-        db["xData"].insert_one({
-            "_id": video_id,
-            "channel_id": target,
-            "message_id": copied_msg.id,
-            "media_type": media_type,
-            "duration": duration,
-            "file_size": size
-        })
-        print("✅ Metadata saved in DB", copied_msg.id)
+        if file_id:
+            db["xData"].insert_one({
+                "_id": file_id,
+                "channel_id": target,
+                "message_id": copied_msg.id,
+                "media_type": media_type,
+                "duration": duration,
+                "file_size": size
+            })
+            print("✅ Metadata saved in DB", copied_msg.id)
 
     except FloodWait as fw:
         wait = getattr(fw, "value", 15) + 2
@@ -485,20 +559,21 @@ async def auto_forward(client, message):
         await asyncio.sleep(wait)
         try:
             copied_msg = await message.copy(chat_id=target, caption=caption)
-            db["xData"].insert_one({
-                "_id": video_id,
-                "channel_id": target,
-                "message_id": copied_msg.id,
-                "media_type": media_type,
-                "duration": duration,
-                "file_size": size
-            })
-            print("✅ Metadata saved in DB after FloodWait retry", getattr(copied_msg, "id", None))
+            if file_id:
+                db["xData"].insert_one({
+                    "_id": file_id,
+                    "channel_id": target,
+                    "message_id": copied_msg.id,
+                    "media_type": media_type,
+                    "duration": duration,
+                    "file_size": size
+                })
+                print("✅ Metadata saved in DB after FloodWait retry", getattr(copied_msg, "id", None))
         except Exception as retry_e:
             print(f"❌ Error retrying after FloodWait: {retry_e}")
     except Exception as e:
         err_s = str(e)
-        if ("CHAT_FORWARDS_RESTRICTED" in err_s or "restricts forwarding content" in err_s) and target == -1004337870091:
+        if ("CHAT_FORWARDS_RESTRICTED" in err_s or "restricts forwarding content" in err_s) and target == TERA_TARGET:
             try:
                 if message.photo:
                     p_file = await client.download_media(message, in_memory=True)
@@ -507,9 +582,9 @@ async def auto_forward(client, message):
                             p_file.name = "photo.jpg"
                         sent_msg = await client.send_photo(chat_id=target, photo=p_file, caption=caption)
                         print(f"✔ [TERADB LIVE PHOTO BYPASS] Sent photo to {target}, id: {sent_msg.id}")
-                        if video_id:
+                        if file_id:
                             db["xData"].insert_one({
-                                "_id": video_id,
+                                "_id": file_id,
                                 "channel_id": target,
                                 "message_id": sent_msg.id,
                                 "media_type": media_type,
@@ -524,7 +599,14 @@ async def auto_forward(client, message):
             except Exception as dl_e:
                 print(f"❌ [TERADB LIVE PHOTO BYPASS ERR] {dl_e}")
         else:
-            print(f"❌ Error copying message or saving data: {e}")
+            if "CHAT_FORWARDS_RESTRICTED" in err_s or "restricts forwarding content" in err_s:
+                restricted_chats = _folder_cache.setdefault("restricted_chats", set())
+                restricted_chats.add(incoming_id)
+                clean_id = int(str(incoming_id).replace("-100", "").replace("-", ""))
+                restricted_chats.add(clean_id)
+                print(f"🚫 [RESTRICTED CHANNEL] VideoDB Channel '{source_title}' ({incoming_id}) restricts forwarding. Cached in restricted list to drop future messages.")
+            else:
+                print(f"❌ Error copying message or saving data: {e}")
 
 
 """

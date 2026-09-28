@@ -264,9 +264,9 @@ export default function ForwardingPage() {
           }`}
         >
           <Sparkles className="w-4 h-4 text-blue-400" />
-          Universal Forwarder (Folder 5 & 6)
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
-            Active System
+          Universal Auto-Routing Forwarder
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+            Active System (All Channels)
           </span>
         </button>
 
@@ -295,16 +295,16 @@ export default function ForwardingPage() {
                 <Clock className="w-5 h-5" />
               </div>
               <div>
-                <span className="font-semibold text-white">2-Hour Folder Auto-Sync & Real-Time Live Listener:</span>
+                <span className="font-semibold text-white">Universal Channel Scanner & Content Auto-Router:</span>
                 <p className="text-gray-400 mt-0.5">
-                  Universal Forwarder scans Folder 5 and Folder 6 every 2 hours (7200s). New incoming posts are copied immediately by the live listener.
+                  Scans ALL dialogs sequentially (skipping admin channels). Videos route to DBXVideos; TeraBox links/photos route to DBXTera. Group photos and plain text are automatically filtered.
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-2 self-start md:self-auto">
               <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono text-[11px] flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                Live Engine Ready
+                Live Auto-Router Active
               </span>
             </div>
           </div>
