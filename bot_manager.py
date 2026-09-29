@@ -257,9 +257,11 @@ class BotManager:
         now = time.time()
         if self._dialog_filters_cache is not None and (now - self._dialog_filters_cache_time < max_age):
             return self._dialog_filters_cache
+        if not client or not getattr(client, "is_connected", False):
+            return self._dialog_filters_cache or []
         try:
             from pyrogram.raw.functions.messages import GetDialogFilters
-            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=10.0)
+            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=8.0)
             if filters:
                 self._dialog_filters_cache = filters
                 self._dialog_filters_cache_time = now
@@ -1403,14 +1405,14 @@ class BotManager:
 
     async def _auto_folder_sync_runner(self):
         """Background worker: Universal channel scanner.
-        Scans ALL channels the userbot is in via get_dialogs().
+        Scans ALL channels the userbot is in using cached dialogs.
         - Skips admin/owned channels
         - Skips target storage channels (DBXVideos, DBXTera, Mix)
         - Processes ONE channel at a time (sequential, no FloodWait)
         - Routes per-message: Videos->VideoDB, TeraBox->TeraDB
         """
         logging.info("[AUTO SYNC] Universal channel scanner started (sequential mode).")
-        await asyncio.sleep(20)  # Wait for startup
+        await asyncio.sleep(35)  # Wait for full connection handshake
         while True:
             try:
                 # Check running or queued jobs per lane
@@ -1426,34 +1428,27 @@ class BotManager:
                 if not has_running_public or not has_running_private:
                     client = self.bots["backup_forwarder"].get("instance")
                     if client and getattr(client, "is_connected", False):
-                        from pyrogram.enums import ChatType
+                        # Fetch dialogs safely via cached & locked get_telegram_dialogs
+                        dialogs = await self.get_telegram_dialogs(force_refresh=False)
 
-                        # Scan ALL dialogs
                         all_channels = []
-                        try:
-                            async for d in client.get_dialogs():
-                                chat = d.chat
-                                if chat.type not in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
-                                    continue
-                                # Skip target storage channels
-                                clean_cid = int(str(chat.id).replace("-100", "").replace("-", ""))
-                                if chat.id in TARGET_CHANNELS or clean_cid in TARGET_CHANNELS:
-                                    continue
-                                # Skip admin/owned channels
-                                is_creator = bool(getattr(chat, "is_creator", False))
-                                admin_rights = getattr(chat, "admin_rights", None)
-                                is_admin = is_creator or (admin_rights is not None)
-                                if is_admin:
-                                    continue
-                                all_channels.append(chat)
-                        except Exception as dial_err:
-                            logging.warning(f"[AUTO SYNC] Error fetching dialogs: {dial_err}")
-                            all_channels = []
+                        for d in dialogs:
+                            cid = d.get("id")
+                            if not cid or not d.get("is_live", True):
+                                continue
+                            # Skip target storage channels
+                            clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
+                            if cid in TARGET_CHANNELS or clean_cid in TARGET_CHANNELS:
+                                continue
+                            # Skip admin/owned channels
+                            if d.get("is_admin") or d.get("is_creator"):
+                                continue
+                            all_channels.append(d)
 
                         # Filter out already completed/restricted channels
                         channels_to_sync = []
-                        for chat in all_channels:
-                            cid = chat.id
+                        for d in all_channels:
+                            cid = d["id"]
                             # Check in-memory status
                             sync_state = self.folder_sync_status.get(cid, {})
                             if sync_state.get("status") in ["completed", "restricted"]:
@@ -1478,24 +1473,16 @@ class BotManager:
                                 if j.get("status") in ["running", "queued"]
                             }
                             if cid not in active_cids:
-                                channels_to_sync.append(chat)
-
-                        # Cache channel info
-                        for chat in all_channels:
-                            self.chat_info_cache[chat.id] = {
-                                "title": str(getattr(chat, "title", "") or f"Chat {chat.id}").strip(),
-                                "username": getattr(chat, "username", None),
-                                "is_public": bool(getattr(chat, "username", None))
-                            }
+                                channels_to_sync.append(d)
 
                         # Store detailed pending list for UI
                         detailed_pending = []
-                        for chat in channels_to_sync:
-                            c_is_pub = bool(getattr(chat, "username", None))
-                            c_tit = str(getattr(chat, "title", "") or f"Chat {chat.id}").strip()
-                            type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                        for d in channels_to_sync:
+                            c_is_pub = bool(d.get("username"))
+                            c_tit = str(d.get("title") or f"Chat {d['id']}").strip()
+                            type_str = d.get("type", "channel")
                             detailed_pending.append({
-                                "channel_id": chat.id,
+                                "channel_id": d["id"],
                                 "title": c_tit,
                                 "target_id": 0,  # auto-route
                                 "folder_name": "Auto",
@@ -1507,15 +1494,16 @@ class BotManager:
 
                         # DUAL-LANE CONCURRENT LAUNCH:
                         # 1 Public channel (via 12 Worker Bots) + 1 Private channel (via Userbot)
-                        for chat in channels_to_sync:
-                            c_is_public = bool(getattr(chat, "username", None))
-                            c_title = str(getattr(chat, "title", "") or f"Chat {chat.id}").strip()
-                            type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                        for d in channels_to_sync:
+                            c_is_public = bool(d.get("username"))
+                            c_title = str(d.get("title") or f"Chat {d['id']}").strip()
+                            type_str = d.get("type", "channel")
+                            cid = d["id"]
 
                             if c_is_public and not has_running_public:
-                                logging.info(f"[AUTO SYNC] [PUBLIC LANE] Launching Worker Bot sync for '{c_title}' ({chat.id}) [{type_str}]")
+                                logging.info(f"[AUTO SYNC] [PUBLIC LANE] Launching Worker Bot sync for '{c_title}' ({cid}) [{type_str}]")
                                 await self.start_bulk_forward_job(
-                                    source_id=chat.id,
+                                    source_id=cid,
                                     target_id=0,
                                     is_public=True,
                                     source_name=c_title
@@ -1523,9 +1511,9 @@ class BotManager:
                                 has_running_public = True
 
                             elif not c_is_public and not has_running_private:
-                                logging.info(f"[AUTO SYNC] [PRIVATE LANE] Launching Userbot sync for '{c_title}' ({chat.id}) [{type_str}]")
+                                logging.info(f"[AUTO SYNC] [PRIVATE LANE] Launching Userbot sync for '{c_title}' ({cid}) [{type_str}]")
                                 await self.start_bulk_forward_job(
-                                    source_id=chat.id,
+                                    source_id=cid,
                                     target_id=0,
                                     is_public=False,
                                     source_name=c_title
@@ -1749,11 +1737,14 @@ class BotManager:
                     logging.warning(f"Could not fetch dialog filters: {fe}")
 
                 raw_dialogs = []
-                async for d in client.get_dialogs():
-                    chat = d.chat
-                    if chat.type not in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
-                        continue
-                    raw_dialogs.append(d)
+                try:
+                    async for d in client.get_dialogs():
+                        chat = d.chat
+                        if chat.type not in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
+                            continue
+                        raw_dialogs.append(d)
+                except Exception as iter_err:
+                    logging.warning(f"Dialog iteration stopped or interrupted: {iter_err}")
 
                 seen_cids = set()
                 for d in raw_dialogs:
@@ -1828,8 +1819,10 @@ class BotManager:
                 all_folder_channels = list(folder_5_channels | folder_6_channels | folder_4_channels)
                 for f_cid in all_folder_channels:
                     if f_cid < 0 and f_cid not in seen_cids:
+                        if not getattr(client, "is_connected", False):
+                            break
                         try:
-                            chat = await client.get_chat(f_cid)
+                            chat = await asyncio.wait_for(client.get_chat(f_cid), timeout=5.0)
                             if chat:
                                 clean_id = int(str(chat.id).replace("-100", "").replace("-", ""))
                                 if chat.id in folder_5_channels or clean_id in folder_5_channels:

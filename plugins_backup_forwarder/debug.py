@@ -84,33 +84,34 @@ def get_live_auto_target(msg):
 async def resolve_folder_target(client, incoming_id):
     now = time.time()
     if now - _folder_cache["time"] > 300 or (not _folder_cache[5] and not _folder_cache[6]):
-        try:
-            from pyrogram.raw.functions.messages import GetDialogFilters
-            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=8.0)
-            f5 = set()
-            f6 = set()
-            for f in filters:
-                fid = getattr(f, 'id', None)
-                ftitle = str(getattr(f, 'title', '')).lower()
-                target_set = None
-                if fid == 5 or ('video' in ftitle and 'db' in ftitle):
-                    target_set = f5
-                elif fid == 6 or ('tera' in ftitle and 'db' in ftitle):
-                    target_set = f6
-                if target_set is not None:
-                    for p in getattr(f, 'include_peers', []):
-                        cid = getattr(p, 'channel_id', getattr(p, 'chat_id', None))
-                        if cid:
-                            clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
-                            target_set.add(int(f"-100{clean_cid}"))
-                            target_set.add(clean_cid)
-            if f5 or f6:
-                _folder_cache[5] = f5
-                _folder_cache[6] = f6
-                _folder_cache["time"] = now
-        except Exception as e:
-            _folder_cache["time"] = now - 240  # retry in 60s instead of immediately
-            print("Folder filter fetch error:", e)
+        if client and getattr(client, "is_connected", False):
+            try:
+                from pyrogram.raw.functions.messages import GetDialogFilters
+                filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=8.0)
+                f5 = set()
+                f6 = set()
+                for f in filters:
+                    fid = getattr(f, 'id', None)
+                    ftitle = str(getattr(f, 'title', '')).lower()
+                    target_set = None
+                    if fid == 5 or ('video' in ftitle and 'db' in ftitle):
+                        target_set = f5
+                    elif fid == 6 or ('tera' in ftitle and 'db' in ftitle):
+                        target_set = f6
+                    if target_set is not None:
+                        for p in getattr(f, 'include_peers', []):
+                            cid = getattr(p, 'channel_id', getattr(p, 'chat_id', None))
+                            if cid:
+                                clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
+                                target_set.add(int(f"-100{clean_cid}"))
+                                target_set.add(clean_cid)
+                if f5 or f6:
+                    _folder_cache[5] = f5
+                    _folder_cache[6] = f6
+                    _folder_cache["time"] = now
+            except Exception as e:
+                _folder_cache["time"] = now - 240  # retry in 60s instead of immediately
+                print("Folder filter fetch error:", e)
 
     clean_id = int(str(incoming_id).replace("-100", "").replace("-", ""))
     if incoming_id in _folder_cache[5] or clean_id in _folder_cache[5]:

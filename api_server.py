@@ -983,6 +983,15 @@ _thumb_semaphore = asyncio.Semaphore(4)
 
 async def get_api_tg_client() -> TgClient:
     global _api_tg_client
+    # Priority: reuse running client from bot_manager to avoid duplicate MTProto session conflicts
+    bf_entry = bot_manager.bots.get("backup_forwarder")
+    if bf_entry and bf_entry.get("instance") and getattr(bf_entry["instance"], "is_connected", False):
+        return bf_entry["instance"]
+
+    mf_entry = bot_manager.bots.get("movie_forwarder")
+    if mf_entry and mf_entry.get("instance") and getattr(mf_entry["instance"], "is_connected", False):
+        return mf_entry["instance"]
+
     if _api_tg_client is None or not _api_tg_client.is_connected:
         _api_tg_client = TgClient(
             "api_media_streamer",
@@ -1029,7 +1038,7 @@ async def _resolve_channel_meta(tg: TgClient, chat_id: int) -> dict:
 async def get_telegram_folders():
     try:
         tg = await get_api_tg_client()
-        filters = await tg.invoke(GetDialogFilters())
+        filters = await bot_manager.get_dialog_filters(tg)
         folder_list = []
         for f in filters:
             fid = getattr(f, "id", None)
