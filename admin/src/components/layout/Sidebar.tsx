@@ -21,6 +21,7 @@ const navigation = [
   { name: 'TeraBox Modifier', href: '/bots/terabox', icon: Zap },
   { name: 'Backup Forwarder', href: '/bots/backup-forwarder', icon: HardDrive },
   { name: 'Data Modifier', href: '/bots/data-modifier', icon: Settings },
+  { name: 'NaruHina Filter Bot', href: '/bots/naruhina', icon: Film },
   { type: 'divider', label: 'Data' },
   { name: 'Channels', href: '/channels', icon: Hash },
   { name: 'Media Gallery', href: '/media', icon: Film },

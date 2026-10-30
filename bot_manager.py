@@ -1,3 +1,6 @@
+import os
+import sys
+import json
 import asyncio
 import logging
 import time
@@ -181,6 +184,12 @@ class BotManager:
             "session_type": "bot_token",
             "description": "Interactive media modifier with inline remove button"
         },
+        "naruhina_bot": {
+            "name": "NaruHina Filter & Stream Bot",
+            "class": None,
+            "session_type": "bot_token",
+            "description": "Lucia auto-filter, channel media indexer & web video streaming bot"
+        },
     }
 
     def __init__(self):
@@ -207,6 +216,7 @@ class BotManager:
                 "class": cfg["class"],
                 "session_type": cfg["session_type"],
                 "instance": None,
+                "process": None,
                 "task": None
             }
             for bot_id, cfg in self.BOT_CONFIGS.items()
@@ -388,6 +398,14 @@ class BotManager:
             try:
                 now_str = datetime.now().isoformat()
                 for bot_id, bot_info in self.bots.items():
+                    if bot_id == "naruhina_bot":
+                        proc = bot_info.get("process")
+                        is_conn = (proc is not None and proc.returncode is None)
+                        self.status[bot_id]["is_running"] = is_conn
+                        if is_conn:
+                            self.status[bot_id]["last_heartbeat"] = now_str
+                        continue
+
                     inst = bot_info.get("instance")
                     if inst is not None:
                         is_conn = getattr(inst, "is_connected", False)
@@ -420,6 +438,73 @@ class BotManager:
 
     async def _run_bot(self, bot_id: str):
         bot_info = self.bots[bot_id]
+
+        if bot_id == "naruhina_bot":
+            naruhina_dir = os.getenv(
+                "NARUHINA_DIR",
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Naru_hina-SilentXBotz", "Naru_hina-SilentXBotz"))
+            )
+            bot_file = os.path.join(naruhina_dir, "bot.py")
+            if not os.path.exists(bot_file):
+                err_msg = f"NaruHina bot.py not found at {bot_file}"
+                logging.error(err_msg, extra={"bot_id": bot_id})
+                self.status[bot_id]["last_error"] = err_msg
+                self.status[bot_id]["is_running"] = False
+                return
+
+            try:
+                self.status[bot_id]["is_running"] = True
+                self.status[bot_id]["started_at"] = datetime.now().isoformat()
+                self.status[bot_id]["last_heartbeat"] = datetime.now().isoformat()
+                self.status[bot_id]["last_error"] = None
+                logging.info(f"Starting NaruHina Filter Bot from {naruhina_dir}...", extra={"bot_id": bot_id})
+
+                # Prepare environment variables including frontend-saved configs
+                sub_env = os.environ.copy()
+                config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "naruhina_config.json")
+                if os.path.isfile(config_file):
+                    try:
+                        with open(config_file, "r", encoding="utf-8") as cf:
+                            saved_cfg = json.load(cf)
+                        for k, v in saved_cfg.items():
+                            if v is not None and str(v).strip():
+                                sub_env[str(k)] = str(v).strip()
+                    except Exception as ce:
+                        logging.warning(f"Could not load naruhina_config.json: {ce}", extra={"bot_id": bot_id})
+
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-u",
+                    "bot.py",
+                    cwd=naruhina_dir,
+                    env=sub_env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT
+                )
+                bot_info["process"] = proc
+
+                while proc.returncode is None:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    decoded = line.decode("utf-8", errors="replace").strip()
+                    if decoded:
+                        level = logging.ERROR if any(k in decoded.lower() for k in ["error", "exception", "traceback", "failed"]) else logging.INFO
+                        logging.log(level, decoded, extra={"bot_id": bot_id})
+
+                await proc.wait()
+                self.status[bot_id]["is_running"] = False
+                bot_info["process"] = None
+                logging.info("NaruHina Filter Bot process exited.", extra={"bot_id": bot_id})
+                return
+            except Exception as e:
+                err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
+                logging.error(f"Error running {bot_id}: {err_msg}", extra={"bot_id": bot_id})
+                self.status[bot_id]["last_error"] = err_msg
+                self.status[bot_id]["is_running"] = False
+                bot_info["process"] = None
+                return
+
         bot_info["instance"] = bot_info["class"]()
         try:
             self.status[bot_id]["is_running"] = True
@@ -474,7 +559,27 @@ class BotManager:
                 if t:
                     t.cancel()
 
-        bot_info = self.bots[bot_id]
+        if bot_id == "naruhina_bot":
+            proc = bot_info.get("process")
+            if proc:
+                try:
+                    proc.terminate()
+                    for _ in range(10):
+                        if proc.returncode is not None:
+                            break
+                        await asyncio.sleep(0.3)
+                    if proc.returncode is None:
+                        proc.kill()
+                except Exception as e:
+                    logging.error(f"Error stopping NaruHina bot: {e}", extra={"bot_id": bot_id})
+                bot_info["process"] = None
+            if bot_info.get("task"):
+                bot_info["task"].cancel()
+                bot_info["task"] = None
+            self.status[bot_id]["is_running"] = False
+            logging.info("NaruHina Filter Bot stopped", extra={"bot_id": bot_id})
+            return {"status": "Stopped", "bot_id": bot_id}
+
         if bot_info["instance"]:
             try:
                 await bot_info["instance"].stop()
@@ -499,6 +604,11 @@ class BotManager:
     def get_bot_status(self, bot_id: str) -> dict:
         if bot_id not in self.status:
             return {"error": "Invalid bot ID"}
+        if bot_id == "naruhina_bot":
+            proc = self.bots[bot_id].get("process")
+            self.status[bot_id]["is_running"] = (proc is not None and proc.returncode is None)
+            return self.status[bot_id]
+
         # Update dynamic fields
         inst = self.bots[bot_id].get("instance")
         if inst is not None:

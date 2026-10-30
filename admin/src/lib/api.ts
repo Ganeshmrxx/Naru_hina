@@ -2,6 +2,13 @@ import { TelegramFolder, TelegramMediaItem, TelegramChannelStats, UniversalStatu
 
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
+    const customUrl = localStorage.getItem('backend_api_url');
+    if (customUrl) return customUrl.replace(/\/$/, '');
+  }
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '');
+  }
+  if (typeof window !== 'undefined') {
     // If running standalone Next.js dev server on port 3000, point to local backend port 8000
     if (window.location.port === '3000') {
       return 'http://localhost:8000';
@@ -397,6 +404,59 @@ class ApiClient {
       restart_result: Record<string, unknown>;
       message: string;
     }>('/api/telegram/session/apply', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  // NaruHina Filter & Streaming Bot API
+  async getNaruHinaStats() {
+    return this.request<{
+      bot_status: Record<string, unknown>;
+      indexed_movies_count: number;
+      collection_name: string;
+      stream_port: number;
+      db_connected: boolean;
+    }>('/api/naruhina/stats');
+  }
+
+  async searchNaruHinaMovies(query: string, page: number = 1, limit: number = 15) {
+    return this.request<{
+      query: string;
+      page: number;
+      total: number;
+      results: Array<{
+        _id: string;
+        file_name?: string;
+        file_size?: number;
+        mime_type?: string;
+        channel_id?: string | number;
+        message_id?: string | number;
+        caption?: string;
+      }>;
+    }>(`/api/naruhina/search?q=${encodeURIComponent(query)}&page=${page}&limit=${limit}`);
+  }
+
+  async getNaruHinaConfig() {
+    return this.request<{
+      BOT_TOKEN: string;
+      API_ID: string;
+      API_HASH: string;
+      ADMINS: string;
+      CHANNELS: string;
+      LOG_CHANNEL: string;
+      BIN_CHANNEL: string;
+      DATABASE_URI: string;
+      DATABASE_NAME: string;
+      COLLECTION_NAME: string;
+      PORT: string;
+      MULTI_TOKEN1?: string;
+      MULTI_TOKEN2?: string;
+    }>('/api/naruhina/config');
+  }
+
+  async saveNaruHinaConfig(data: Record<string, string>) {
+    return this.request<{ status: string; message: string }>('/api/naruhina/config', {
       method: 'POST',
       body: JSON.stringify(data),
     });

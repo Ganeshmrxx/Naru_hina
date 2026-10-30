@@ -52,6 +52,14 @@ const BOTS_INFO: Record<string, {
     desc: 'Interactive data modifier bot supporting inline "❌ Remove" buttons to delete media across chats.',
     features: ['Interactive Callback Deletion', 'Source Message Synchronization', 'Restricted User Access Control']
   },
+  naruhina_bot: {
+    name: 'NaruHina Filter & Stream Bot',
+    session: 'SilentX (bot token)',
+    icon: Film,
+    path: '/bots/naruhina',
+    desc: 'Lucia auto-filter, automatic channel file indexing, dual DB management & integrated video streaming.',
+    features: ['Automated Channel Indexing', 'Dual DB (NovemberMovieData2)', 'Browser Fast Video Streaming']
+  },
 };
 
 export default function BotsOverviewPage() {

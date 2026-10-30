@@ -858,6 +858,7 @@ def db_status():
                 "forward_progress": {"count": db_a.forward_progress.count_documents({}) if db_a is not None else 0, "status": "active"},
                 "media_store": {"count": db_a.media_store.count_documents({}) if db_a is not None else 0, "status": "active"},
                 "daily_summary": {"count": db_a.daily_summary.count_documents({}) if db_a is not None else 0, "status": "active"},
+                "NovemberMovieData2": {"count": db_a.NovemberMovieData2.count_documents({}) if db_a is not None else 0, "status": "active"},
             }
         },
         "cluster_b": {
@@ -877,7 +878,7 @@ def db_status():
 def get_collection_data(name: str, limit: int = Query(20, ge=1, le=100)):
     records = []
     # Check cluster A
-    if db_a is not None and name in ["chats", "forward_progress", "media_store", "daily_summary"]:
+    if db_a is not None and name in ["chats", "forward_progress", "media_store", "daily_summary", "NovemberMovieData2"]:
         coll = db_a[name]
         for doc in coll.find().sort("_id", -1).limit(limit):
             doc["_id"] = str(doc.get("_id"))
@@ -1513,6 +1514,124 @@ if os.path.exists(admin_out_dir):
         if os.path.isfile(fallback):
             return FileResponse(fallback)
         raise HTTPException(status_code=404, detail="Page not found")
+
+# --- NaruHina Filter Bot Specific Endpoints ---
+@app.get("/api/naruhina/stats", dependencies=[Depends(verify_token)])
+def get_naruhina_stats():
+    status = bot_manager.get_bot_status("naruhina_bot")
+    movie_count = db_a.NovemberMovieData2.count_documents({}) if db_a is not None else 0
+    return {
+        "bot_status": status,
+        "indexed_movies_count": movie_count,
+        "collection_name": "NovemberMovieData2",
+        "stream_port": int(os.getenv("PORT", 8089)),
+        "db_connected": db_a is not None
+    }
+
+@app.get("/api/naruhina/search", dependencies=[Depends(verify_token)])
+def search_naruhina_movies(q: str = Query("", min_length=1), limit: int = Query(15, ge=1, le=50), page: int = Query(1, ge=1)):
+    if db_a is None:
+        raise HTTPException(status_code=503, detail="Database Cluster A is not connected")
+    
+    words = re.sub(r"[^a-zA-Z0-9]", " ", q).split()
+    conditions = [{"file_name": {"$regex": word, "$options": "i"}} for word in words]
+    filter_query = {"$and": conditions} if conditions else {}
+    
+    skip = (page - 1) * limit
+    coll = db_a["NovemberMovieData2"]
+    cursor = coll.find(filter_query).sort("_id", -1).skip(skip).limit(limit)
+    
+    results = []
+    for doc in cursor:
+        doc["_id"] = str(doc.get("_id"))
+        results.append(doc)
+    
+    total = coll.count_documents(filter_query)
+    return {
+        "query": q,
+        "page": page,
+        "total": total,
+        "results": results
+    }
+
+class NaruHinaConfigRequest(BaseModel):
+    BOT_TOKEN: Optional[str] = ""
+    API_ID: Optional[str] = ""
+    API_HASH: Optional[str] = ""
+    ADMINS: Optional[str] = ""
+    CHANNELS: Optional[str] = ""
+    LOG_CHANNEL: Optional[str] = ""
+    BIN_CHANNEL: Optional[str] = ""
+    DATABASE_URI: Optional[str] = ""
+    DATABASE_NAME: Optional[str] = "Cluster0"
+    COLLECTION_NAME: Optional[str] = "NovemberMovieData2"
+    PORT: Optional[str] = "8089"
+    MULTI_TOKEN1: Optional[str] = ""
+    MULTI_TOKEN2: Optional[str] = ""
+
+@app.get("/api/naruhina/config", dependencies=[Depends(verify_token)])
+def get_naruhina_config():
+    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "naruhina_config.json")
+    cfg = {}
+    if os.path.isfile(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+
+    defaults = {
+        "BOT_TOKEN": os.getenv("BOT_TOKEN", ""),
+        "API_ID": os.getenv("API_ID", "27672711"),
+        "API_HASH": os.getenv("API_HASH", "4e7aaf6a6b0ddcb00e05e9234e2e84dd"),
+        "ADMINS": os.getenv("ADMINS", ""),
+        "CHANNELS": os.getenv("CHANNELS", ""),
+        "LOG_CHANNEL": os.getenv("LOG_CHANNEL", ""),
+        "BIN_CHANNEL": os.getenv("BIN_CHANNEL", ""),
+        "DATABASE_URI": os.getenv("DATABASE_URI", MONGO_URI_A or ""),
+        "DATABASE_NAME": os.getenv("DATABASE_NAME", "Cluster0"),
+        "COLLECTION_NAME": os.getenv("COLLECTION_NAME", "NovemberMovieData2"),
+        "PORT": os.getenv("PORT", "8089"),
+        "MULTI_TOKEN1": os.getenv("MULTI_TOKEN1", ""),
+        "MULTI_TOKEN2": os.getenv("MULTI_TOKEN2", ""),
+    }
+    defaults.update(cfg)
+    return defaults
+
+@app.post("/api/naruhina/config", dependencies=[Depends(verify_token)])
+def save_naruhina_config(req: NaruHinaConfigRequest):
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, "naruhina_config.json")
+
+    data = req.dict()
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save config cache: {e}")
+
+    # Also persist to Naru_hina directory .env for native backup
+    naruhina_dir = os.getenv(
+        "NARUHINA_DIR",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Naru_hina-SilentXBotz", "Naru_hina-SilentXBotz"))
+    )
+    if os.path.isdir(naruhina_dir):
+        env_path = os.path.join(naruhina_dir, ".env")
+        try:
+            with open(env_path, "w", encoding="utf-8") as ef:
+                for k, v in data.items():
+                    if v is not None:
+                        ef.write(f'{k}="{v}"\n')
+        except Exception as e:
+            print(f"Warning: Failed to write .env in naruhina dir: {e}")
+
+    # Update in-memory os.environ
+    for k, v in data.items():
+        if v is not None and str(v).strip():
+            os.environ[k] = str(v).strip()
+
+    return {"status": "success", "message": "NaruHina configuration and tokens saved successfully"}
 
 if __name__ == "__main__":
     # Support Bot-Hosting SERVER_PORT as well as standard PORT

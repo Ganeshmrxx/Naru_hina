@@ -31,6 +31,11 @@ const COLLECTION_META: Record<string, { cluster: 'A' | 'B'; desc: string; role: 
     role: 'Daily Metrics',
     desc: 'Aggregate daily counts for total media, video count, photo count, and total transferred bytes.'
   },
+  NovemberMovieData2: {
+    cluster: 'A',
+    role: 'NaruHina Movie Database',
+    desc: 'Indexed movies, series, streaming hashes and metadata for Lucia Auto-Filter Bot.'
+  },
   xDataChannels: {
     cluster: 'B',
     role: 'Channel Routing Map',
