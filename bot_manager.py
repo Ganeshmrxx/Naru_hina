@@ -261,6 +261,17 @@ class BotManager:
         self.worker_bot_counter = 0
         self._dialog_filters_cache = None
         self._dialog_filters_cache_time = 0
+        self._weekly_health_task = None
+        self.health_scan_status = {
+            "is_running": False,
+            "started_at": None,
+            "completed_at": None,
+            "total_scanned": 0,
+            "accessible_count": 0,
+            "banned_left_count": 0,
+            "current_chat": None,
+            "last_summary": None
+        }
 
     async def get_dialog_filters(self, client, max_age: int = 300) -> list:
         """Fetch Telegram dialog filters with 5-minute cache to prevent MTProto timeouts."""
@@ -387,6 +398,10 @@ class BotManager:
     def start_auto_folder_sync(self):
         if self._auto_folder_sync_task is None:
             self._auto_folder_sync_task = asyncio.create_task(self._auto_folder_sync_runner())
+
+    def start_weekly_health_scanner(self):
+        if self._weekly_health_task is None:
+            self._weekly_health_task = asyncio.create_task(self._weekly_health_loop())
 
     def start_heartbeat(self):
         if self._heartbeat_task is None:
@@ -2144,6 +2159,226 @@ class BotManager:
             "deleted_count": deleted_count,
             "remaining_live": len(mappings) - deleted_count
         }
+
+    async def _weekly_health_loop(self):
+        """Background loop: Runs safe health scan every 7 days (weekly)."""
+        await asyncio.sleep(120)  # Wait for startup handshake
+        while True:
+            try:
+                # Check when was the last scan run in MongoDB
+                should_run = True
+                if self.db_a is not None:
+                    last_doc = self.db_a.system_meta.find_one({"_id": "weekly_health_scan"})
+                    if last_doc and last_doc.get("last_run"):
+                        try:
+                            last_run_dt = datetime.fromisoformat(last_doc["last_run"])
+                            if datetime.now() - last_run_dt < timedelta(days=7):
+                                should_run = False
+                        except Exception:
+                            pass
+
+                if should_run:
+                    logging.info("[HEALTH SCAN] Starting automated weekly channel health scan...")
+                    await self.run_channel_health_scan(notify_username="ganeshmrxx")
+            except Exception as e:
+                logging.error(f"[HEALTH SCAN LOOP ERR] {e}")
+
+            await asyncio.sleep(3600 * 6)  # Check every 6 hours
+
+    async def run_channel_health_scan(self, notify_username: str = "ganeshmrxx") -> dict:
+        """Weekly / On-Demand safe channel scanner:
+        - Scans all channels where userbot is present.
+        - Tests each channel with safe 2-3s cooldown to guarantee 0 FloodWait.
+        - If channel is banned/deleted/inaccessible, leaves & removes it from Telegram and DB.
+        - Sends detailed status report to @ganeshmrxx via Telegram.
+        """
+        if self.health_scan_status["is_running"]:
+            return {"status": "already_running", "message": "Health scan is already in progress"}
+
+        client = None
+        for b_id in ["backup_forwarder", "movie_forwarder"]:
+            inst = self.bots.get(b_id, {}).get("instance")
+            if inst and getattr(inst, "is_connected", False):
+                client = inst
+                break
+
+        if not client:
+            return {"status": "error", "message": "No active Telegram client connected"}
+
+        from pyrogram.enums import ChatType
+        from pyrogram.errors import ChannelPrivate, ChatAdminRequired, UserDeactivatedBan, ChannelBanned, FloodWait, RPCError
+
+        self.health_scan_status.update({
+            "is_running": True,
+            "started_at": datetime.now().isoformat(),
+            "completed_at": None,
+            "total_scanned": 0,
+            "accessible_count": 0,
+            "banned_left_count": 0,
+            "current_chat": "Collecting dialogs...",
+            "last_summary": None
+        })
+
+        banned_left_list = []
+        accessible_list = []
+        total_dialogs = []
+
+        try:
+            # Step 1: Collect dialogs safely
+            async for d in client.get_dialogs():
+                chat = d.chat
+                if chat.type in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
+                    # Skip target storage channels
+                    clean_cid = int(str(chat.id).replace("-100", "").replace("-", ""))
+                    if chat.id in TARGET_CHANNELS or clean_cid in TARGET_CHANNELS:
+                        continue
+                    # Skip owned/admin channels
+                    if getattr(chat, "is_creator", False) or getattr(chat, "admin_rights", None):
+                        continue
+                    total_dialogs.append(chat)
+
+            logging.info(f"[HEALTH SCAN] Collected {len(total_dialogs)} channels for health check.")
+
+            for idx, chat in enumerate(total_dialogs, 1):
+                cid = chat.id
+                c_title = str(getattr(chat, "title", "") or f"Chat {cid}").strip()
+                self.health_scan_status["current_chat"] = f"[{idx}/{len(total_dialogs)}] {c_title}"
+                self.health_scan_status["total_scanned"] = idx
+
+                is_accessible = False
+                leave_reason = None
+
+                # Test accessibility with get_chat & checking restriction
+                try:
+                    full_chat = await asyncio.wait_for(client.get_chat(cid), timeout=8.0)
+                    restr = getattr(full_chat, 'restrictions', None)
+                    if restr:
+                        leave_reason = "Restrictions / Platform Blocked"
+                    else:
+                        is_accessible = True
+                except (ChannelPrivate, ChannelBanned, ChatAdminRequired, UserDeactivatedBan) as ban_err:
+                    leave_reason = f"Banned / Inaccessible ({type(ban_err).__name__})"
+                except FloodWait as fw:
+                    wait_time = getattr(fw, 'value', 15) + 2
+                    logging.warning(f"[HEALTH SCAN] FloodWait {wait_time}s on chat {cid}. Sleeping...")
+                    await asyncio.sleep(wait_time)
+                    is_accessible = True
+                except Exception as ex:
+                    err_str = str(ex).lower()
+                    if any(k in err_str for k in ["banned", "deactivated", "inaccessible", "private", "not accessible"]):
+                        leave_reason = str(ex)
+                    else:
+                        is_accessible = True
+
+                if is_accessible:
+                    accessible_list.append({"id": cid, "title": c_title})
+                    self.health_scan_status["accessible_count"] += 1
+                else:
+                    logging.warning(f"[HEALTH SCAN] Leaving banned channel '{c_title}' ({cid}): {leave_reason}")
+                    try:
+                        await client.leave_chat(cid, delete=True)
+                    except Exception as le:
+                        logging.warning(f"Could not leave {cid}: {le}")
+
+                    # Remove from MongoDB queues & progress
+                    if self.db_a is not None:
+                        try:
+                            self.db_a.forward_queue.delete_many({"chat_id": cid})
+                            self.db_a.forward_progress.update_one(
+                                {"chat_id": cid},
+                                {"$set": {
+                                    "status": "banned_left",
+                                    "error": f"Auto-left during health scan: {leave_reason}",
+                                    "updated_at": datetime.now()
+                                }},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+
+                    if self.db_b is not None:
+                        try:
+                            self.db_b.xDataChannels.delete_many({"_id": cid})
+                        except Exception:
+                            pass
+
+                    banned_left_list.append({"id": cid, "title": c_title, "reason": leave_reason})
+                    self.health_scan_status["banned_left_count"] += 1
+
+                # Safe pacing delay (2.5s) to guarantee zero FloodWait
+                await asyncio.sleep(2.5)
+
+            # Invalidate caches
+            self.dialogs_cache = []
+            self.dialogs_cache_time = 0
+
+            # Step 2: Record completion in MongoDB
+            if self.db_a is not None:
+                try:
+                    self.db_a.system_meta.update_one(
+                        {"_id": "weekly_health_scan"},
+                        {"$set": {
+                            "last_run": datetime.now().isoformat(),
+                            "total_scanned": len(total_dialogs),
+                            "accessible_count": len(accessible_list),
+                            "banned_left_count": len(banned_left_list),
+                            "updated_at": datetime.now()
+                        }},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+
+            # Step 3: Build & Send summary report to @ganeshmrxx
+            summary_text = (
+                f"🛡️ <b>[AllForward Weekly Health Scan Report]</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 <b>Date:</b> {datetime.now().strftime('%d %b %Y, %I:%M %p')}\n"
+                f"📊 <b>Total Channels Scanned:</b> {len(total_dialogs)}\n"
+                f"✅ <b>Accessible & Active Channels:</b> {len(accessible_list)}\n"
+                f"🚫 <b>Banned/Dead Channels Removed:</b> {len(banned_left_list)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+            )
+
+            if banned_left_list:
+                summary_text += "🗑️ <b>Removed Banned Channels:</b>\n"
+                for idx, b_item in enumerate(banned_left_list[:15], 1):
+                    summary_text += f"{idx}. <b>{b_item['title']}</b> (<code>{b_item['id']}</code>)\n"
+                if len(banned_left_list) > 15:
+                    summary_text += f"<i>...and {len(banned_left_list) - 15} more channels.</i>\n"
+            else:
+                summary_text += "✨ <i>Sabhi channels 100% active aur accessible hain. Koi dead channel nahi mila!</i>\n"
+
+            summary_text += f"\n🤖 <b>Status:</b> AllForward Universal Forwarder is running smoothly."
+
+            if notify_username:
+                target_user = notify_username.lstrip('@')
+                try:
+                    await client.send_message(target_user, summary_text, parse_mode=ChatType.HTML if hasattr(ChatType, 'HTML') else None)
+                    logging.info(f"[HEALTH SCAN] Summary report successfully sent to @{target_user}!")
+                except Exception as send_err:
+                    logging.warning(f"[HEALTH SCAN] Could not send report to @{target_user}: {send_err}")
+
+            self.health_scan_status.update({
+                "is_running": False,
+                "completed_at": datetime.now().isoformat(),
+                "current_chat": "Idle (Scan Complete)",
+                "last_summary": summary_text
+            })
+
+            return {
+                "success": True,
+                "total_scanned": len(total_dialogs),
+                "accessible_count": len(accessible_list),
+                "banned_left_count": len(banned_left_list),
+                "banned_channels": banned_left_list
+            }
+
+        except Exception as overall_e:
+            self.health_scan_status["is_running"] = False
+            self.health_scan_status["current_chat"] = f"Error: {overall_e}"
+            logging.error(f"[HEALTH SCAN FATAL] {overall_e}")
+            return {"success": False, "error": str(overall_e)}
 
     async def set_channel_mapping(self, source_id: int, source_name: str, target_id: int, target_name: str, forward_history: bool = True, db_b = None) -> dict:
         if db_b is None:

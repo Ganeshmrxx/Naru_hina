@@ -4,11 +4,13 @@ import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import {
   Hash, Search, Filter, RefreshCw, ExternalLink, ShieldCheck,
-  Radio, Layers, ArrowRightLeft, Film
+  Radio, Layers, ArrowRightLeft, Film, ShieldAlert, CheckCircle2,
+  Trash2, Send
 } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { toast } from '@/components/ui/Toast';
 import { api } from '@/lib/api';
 
 export default function ChannelsPage() {
@@ -17,6 +19,41 @@ export default function ChannelsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
+
+  // Weekly / On-Demand Health Scan State
+  const [healthStatus, setHealthStatus] = useState<{
+    is_running: boolean;
+    started_at: string | null;
+    completed_at: string | null;
+    total_scanned: number;
+    accessible_count: number;
+    banned_left_count: number;
+    current_chat: string | null;
+    last_summary: string | null;
+  } | null>(null);
+  const [startingScan, setStartingScan] = useState(false);
+
+  const fetchHealthStatus = async () => {
+    try {
+      const s = await api.getHealthScanStatus();
+      setHealthStatus(s);
+    } catch {
+      // silent
+    }
+  };
+
+  const startScan = async () => {
+    try {
+      setStartingScan(true);
+      const res = await api.startHealthScan('ganeshmrxx');
+      toast('success', res.message || 'Health scan started. Report will be sent to @ganeshmrxx');
+      fetchHealthStatus();
+    } catch (e: unknown) {
+      toast('error', e instanceof Error ? e.message : 'Failed to start health scan');
+    } finally {
+      setStartingScan(false);
+    }
+  };
 
   const fetchChannels = async () => {
     try {
@@ -32,6 +69,11 @@ export default function ChannelsPage() {
 
   useEffect(() => {
     fetchChannels();
+    fetchHealthStatus();
+    const interval = setInterval(() => {
+      fetchHealthStatus();
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const filteredChannels = useMemo(() => {
@@ -58,18 +100,89 @@ export default function ChannelsPage() {
             Aggregated known chats across MongoDB scan queues (<code className="text-blue-300">chats</code>) and routing mappings (<code className="text-purple-300">xDataChannels</code>)
           </p>
         </div>
-        <button
-          onClick={() => {
-            setRefreshing(true);
-            fetchChannels();
-          }}
-          disabled={refreshing}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#111827] border border-[#1f2937] text-sm text-gray-300 hover:text-white hover:bg-[#1f2937] transition-colors self-start sm:self-auto"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-blue-400' : ''}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={startScan}
+            disabled={startingScan || healthStatus?.is_running}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold shadow-md transition-all ${
+              healthStatus?.is_running
+                ? 'bg-amber-600/30 text-amber-300 border border-amber-500/40 cursor-wait'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
+            }`}
+          >
+            <ShieldCheck className={`w-4 h-4 ${healthStatus?.is_running ? 'animate-pulse text-amber-300' : ''}`} />
+            {healthStatus?.is_running ? 'Scanning Health...' : 'Run Health & Cleaner Scan'}
+          </button>
+          <button
+            onClick={() => {
+              setRefreshing(true);
+              fetchChannels();
+              fetchHealthStatus();
+            }}
+            disabled={refreshing}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#111827] border border-[#1f2937] text-xs text-gray-300 hover:text-white hover:bg-[#1f2937] transition-colors self-start sm:self-auto"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-blue-400' : ''}`} />
+            Refresh
+          </button>
+        </div>
       </div>
+
+      {/* Weekly / On-Demand Health Scan Banner */}
+      {healthStatus && (
+        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4 sm:p-5 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1f2937] pb-3">
+            <div className="flex items-center gap-2">
+              <span className={`w-2.5 h-2.5 rounded-full ${healthStatus.is_running ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`} />
+              <h3 className="text-sm font-bold text-white">
+                Weekly Channel Health & Inaccessible Cleaner
+              </h3>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
+                Reports to: @ganeshmrxx
+              </span>
+            </div>
+            <span className="text-[11px] text-gray-400 font-mono">
+              {healthStatus.is_running ? (
+                <span className="text-amber-400 flex items-center gap-1.5">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  Testing live channels (2.5s safe cooldown)...
+                </span>
+              ) : healthStatus.completed_at ? (
+                `Last Scan: ${new Date(healthStatus.completed_at).toLocaleString()}`
+              ) : (
+                'Auto-runs every 7 days (Safe zero-floodwait)'
+              )}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+            <div className="bg-[#0d1117] p-3 rounded-lg border border-[#1f2937]">
+              <span className="text-gray-400 block text-[11px]">Channels Tested:</span>
+              <span className="text-base font-bold text-white mt-1 block">
+                {healthStatus.total_scanned}
+              </span>
+            </div>
+            <div className="bg-[#0d1117] p-3 rounded-lg border border-[#1f2937]">
+              <span className="text-gray-400 block text-[11px]">Accessible & Active:</span>
+              <span className="text-base font-bold text-emerald-400 mt-1 block">
+                {healthStatus.accessible_count}
+              </span>
+            </div>
+            <div className="bg-[#0d1117] p-3 rounded-lg border border-[#1f2937]">
+              <span className="text-gray-400 block text-[11px]">Banned/Dead Left:</span>
+              <span className="text-base font-bold text-rose-400 mt-1 block">
+                {healthStatus.banned_left_count}
+              </span>
+            </div>
+            <div className="bg-[#0d1117] p-3 rounded-lg border border-[#1f2937]">
+              <span className="text-gray-400 block text-[11px]">Current Progress:</span>
+              <span className="text-xs font-mono font-medium text-blue-300 mt-1 block truncate" title={healthStatus.current_chat || 'Idle'}>
+                {healthStatus.current_chat || 'Idle'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Search & Filter Toolbar */}
       <div className="flex flex-col sm:flex-row gap-3 bg-[#111827] border border-[#1f2937] rounded-xl p-4">

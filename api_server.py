@@ -140,6 +140,7 @@ async def startup_event():
     bot_manager.set_databases(db_a, db_b)
     bot_manager.start_heartbeat()
     bot_manager.start_auto_folder_sync()
+    bot_manager.start_weekly_health_scanner()
     await bot_manager.start_all()
 
 @app.on_event("shutdown")
@@ -578,6 +579,18 @@ async def clean_dead_channels():
     if db_b is None:
         raise HTTPException(status_code=500, detail="Cluster B not connected")
     return await bot_manager.clean_dead_channels(db_b=db_b)
+
+@app.get("/api/channels/health-scan/status", dependencies=[Depends(verify_token)])
+def get_channel_health_scan_status():
+    return bot_manager.health_scan_status
+
+@app.post("/api/channels/health-scan/start", dependencies=[Depends(verify_token)])
+async def start_channel_health_scan(notify: str = "ganeshmrxx"):
+    if bot_manager.health_scan_status["is_running"]:
+        return {"status": "already_running", "message": "Scan is already running"}
+    import asyncio
+    asyncio.create_task(bot_manager.run_channel_health_scan(notify_username=notify))
+    return {"status": "started", "message": f"Channel health scan started. Report will be sent to @{notify}."}
 
 
 

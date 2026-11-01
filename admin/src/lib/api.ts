@@ -308,6 +308,25 @@ class ApiClient {
     });
   }
 
+  async getHealthScanStatus() {
+    return this.request<{
+      is_running: boolean;
+      started_at: string | null;
+      completed_at: string | null;
+      total_scanned: number;
+      accessible_count: number;
+      banned_left_count: number;
+      current_chat: string | null;
+      last_summary: string | null;
+    }>('/api/channels/health-scan/status');
+  }
+
+  async startHealthScan(notify: string = 'ganeshmrxx') {
+    return this.request<{ status: string; message: string }>(`/api/channels/health-scan/start?notify=${encodeURIComponent(notify)}`, {
+      method: 'POST',
+    });
+  }
+
   async addChannelToFolder(chatId: number, folderId: number) {
     return this.request<{ success: boolean; chat_id: number; folder_id: number; error?: string }>('/api/telegram/folders/assign', {
       method: 'POST',
