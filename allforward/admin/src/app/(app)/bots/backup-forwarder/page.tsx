@@ -553,7 +553,7 @@ export default function BackupForwarderDetailPage() {
                     <span className="text-gray-400 font-mono text-[11px]">({syncOverview.bot_lane.active_job.source_id})</span>
                   </div>
                   <span className="text-emerald-400 text-[11px] font-bold font-mono">
-                    ➔ {syncOverview.bot_lane.active_job.target_name || (syncOverview.bot_lane.active_job.target_id === -1004401442087 ? 'DBXVideos' : 'DBXTera')}
+                    ➔ {syncOverview.bot_lane.active_job.target_name && syncOverview.bot_lane.active_job.target_name !== '0' ? syncOverview.bot_lane.active_job.target_name : 'DBXVideos (Auto)'}
                   </span>
                 </div>
 
@@ -656,7 +656,7 @@ export default function BackupForwarderDetailPage() {
                     <span className="text-gray-400 font-mono text-[11px]">({syncOverview.userbot_lane.active_job.source_id})</span>
                   </div>
                   <span className="text-emerald-400 text-[11px] font-bold font-mono">
-                    ➔ {syncOverview.userbot_lane.active_job.target_name || (syncOverview.userbot_lane.active_job.target_id === -1004401442087 ? 'DBXVideos' : 'DBXTera')}
+                    ➔ {syncOverview.userbot_lane.active_job.target_name && syncOverview.userbot_lane.active_job.target_name !== '0' ? syncOverview.userbot_lane.active_job.target_name : 'DBXVideos (Auto)'}
                   </span>
                 </div>
 
@@ -758,7 +758,7 @@ export default function BackupForwarderDetailPage() {
                         ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
                         : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
                     }`}>
-                      ➔ {c.target_name || (c.target_id === -1004401442087 ? 'DBXVideos' : 'DBXTera')}
+                      ➔ {c.target_name && c.target_name !== '0' ? c.target_name : 'DBXVideos (Auto)'}
                     </span>
                   </div>
                   <div className="text-[11px] text-gray-400 font-mono">
