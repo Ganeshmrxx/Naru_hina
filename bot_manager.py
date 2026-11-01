@@ -120,42 +120,43 @@ def is_video_message(msg):
     return False
 
 def get_auto_target(msg, chat_type_str="channel"):
-    """Determine target channel for a message based on content.
-    Returns target_id or None if message should be skipped.
-    - Videos without TeraBox link -> VideoDB
-    - Videos/Photos with TeraBox link -> TeraDB
-    - Photos without TeraBox link -> SKIP
-    - Text-only -> SKIP
-    - From groups: only videos (photos always skipped)
+    """Determine target channel for a message based on exact user content rules:
+    1. Single Video (or video document) -> DBXVideos (-1004401442087)
+       (unless it has TeraBox link, then -> DBXTera)
+    2. Grouped Gallery (Albums: Photo + Video mix or photos/videos) -> DBXVideos (-1004401442087)
+       (unless it has TeraBox link, then -> DBXTera)
+    3. Single Photo:
+       - If contains TeraBox link -> DBXTera (-1004337870091)
+       - If NO TeraBox link -> None (SKIP permanently)
+    4. Text-only / Promo Ads / Plain text without media -> None (SKIP permanently)
+    5. Groups/Supergroups: Only videos allowed.
     """
-    from pyrogram.enums import ChatType
     tera = is_terabox_content(msg)
     is_vid = is_video_message(msg)
     is_photo = bool(msg.photo)
     is_album = bool(getattr(msg, 'media_group_id', None))
     is_group = (chat_type_str in ("group", "supergroup"))
 
+    # RULE 1: GROUPED GALLERY / ALBUMS
     if is_album:
-        # Albums: route based on TeraBox content
         if tera:
-            return TERA_TARGET
-        elif is_vid:
-            return VIDEO_TARGET
-        elif is_photo and not is_group:
-            # Channel photo albums without tera -> skip
-            return None
-        else:
-            return VIDEO_TARGET if is_vid else None
+            return TERA_TARGET  # DBXTera if TeraBox link present
+        # Grouped gallery with pic+video or any album media goes to DBXVideos
+        return VIDEO_TARGET
 
+    # RULE 2: SINGLE VIDEO
     if is_vid:
         return TERA_TARGET if tera else VIDEO_TARGET
 
+    # RULE 3: SINGLE PHOTO
     if is_photo:
         if is_group:
-            return None  # Groups: skip all photos
-        return TERA_TARGET if tera else None  # Channels: only TeraBox photos
+            return None  # Skip all group photos
+        # Only photos with TeraBox links go to DBXTera, otherwise skip
+        return TERA_TARGET if tera else None
 
-    return None  # Text-only or unsupported -> skip
+    # RULE 4: Plain text / Promo ads without media -> SKIP
+    return None
 
 
 class BotManager:

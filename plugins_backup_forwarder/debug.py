@@ -48,13 +48,16 @@ def is_video_message(msg):
     return False
 
 def get_live_auto_target(msg):
-    """Determine live auto target based on user rules:
-    - Skip group photos; only videos in group/supergroup
-    - Videos with TeraBox link -> DBXTera
-    - Videos without TeraBox link -> DBXVideos
-    - Channel photos with TeraBox link -> DBXTera
-    - Albums: if TeraBox link -> DBXTera else if has video -> DBXVideos
-    - Otherwise -> None (skip)
+    """Determine live auto target based on exact user rules:
+    1. Single Video (or video document) -> DBXVideos (-1004401442087)
+       (unless it has TeraBox link, then -> DBXTera)
+    2. Grouped Gallery (Albums: Photo + Video mix or photos/videos) -> DBXVideos (-1004401442087)
+       (unless it has TeraBox link, then -> DBXTera)
+    3. Single Photo:
+       - If contains TeraBox link -> DBXTera (-1004337870091)
+       - If NO TeraBox link -> None, None (SKIP permanently)
+    4. Text-only / Promo Ads / Plain text without media -> None, None (SKIP permanently)
+    5. Groups/Supergroups: Only videos allowed.
     """
     is_group = msg.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
     tera = is_terabox_content(msg)
@@ -62,23 +65,24 @@ def get_live_auto_target(msg):
     is_photo = bool(msg.photo)
     is_album = bool(getattr(msg, "media_group_id", None))
 
+    # RULE 1: GROUPED GALLERY / ALBUMS
     if is_album:
         if tera:
             return TERA_TARGET, "DBXTera"
-        if is_vid:
-            return VIDEO_TARGET, "DBXVideos"
-        if is_photo and not is_group:
-            return None, None
-        return (VIDEO_TARGET, "DBXVideos") if is_vid else (None, None)
+        # Grouped gallery with pic+video or any album media goes to DBXVideos
+        return VIDEO_TARGET, "DBXVideos"
 
+    # RULE 2: SINGLE VIDEO
     if is_vid:
         return (TERA_TARGET, "DBXTera") if tera else (VIDEO_TARGET, "DBXVideos")
 
+    # RULE 3: SINGLE PHOTO
     if is_photo:
         if is_group:
             return None, None
         return (TERA_TARGET, "DBXTera") if tera else (None, None)
 
+    # RULE 4: Plain text / Promo ads without media -> SKIP
     return None, None
 
 async def resolve_folder_target(client, incoming_id):

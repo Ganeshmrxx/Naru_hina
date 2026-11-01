@@ -302,11 +302,11 @@ export default function BackupForwarderDetailPage() {
           </div>
           <div>
             <div className="flex items-center gap-2.5">
-              <h1 className="text-xl font-bold text-white">Folder-Based Forwarding Router</h1>
+              <h1 className="text-xl font-bold text-white">Content-Based Forwarding Router</h1>
               <StatusBadge status={isRunning ? 'online' : 'offline'} />
             </div>
             <p className="text-xs text-gray-400 mt-1">
-              Target channels are automatically determined by Telegram Folders (<code className="text-blue-300">@ganeshmrxx</code>)
+              Content-Based Routing: Videos & Albums to DBXVideos, TeraBox Media to DBXTera, Single photos & promo text skipped (<code className="text-blue-300">@ganeshmrxx</code>)
             </p>
           </div>
         </div>
@@ -388,7 +388,7 @@ export default function BackupForwarderDetailPage() {
           </div>
           <div>
             <h4 className="text-xs font-semibold text-white">
-              100% Automatic Telegram Folder Forwarder & Auto-History Sync Active
+              100% Content-Based Automatic Forwarder & Smart Filter Engine Active
             </h4>
             <p className="text-[11px] text-gray-400 mt-0.5">
               Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward all past media & live posts to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Past messages are synced automatically in the background — no manual clicking needed!
