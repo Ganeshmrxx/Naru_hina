@@ -1,6 +1,8 @@
 import { TelegramFolder, TelegramMediaItem, TelegramChannelStats, UniversalStatusResponse, UniversalQueueItem, GroupedAlbumItem } from './types';
 
-function getApiUrl(): string {
+export const DEFAULT_BACKEND_URL = 'https://app-ganeshmrxx-bc5f894b.koyeb.app';
+
+export function getApiUrl(): string {
   if (typeof window !== 'undefined') {
     const customUrl = localStorage.getItem('backend_api_url');
     if (customUrl) return customUrl.replace(/\/$/, '');
@@ -13,10 +15,24 @@ function getApiUrl(): string {
     if (window.location.port === '3000') {
       return 'http://localhost:8000';
     }
-    // On any production domain (e.g. apps.bot-hosting.cloud) use same-origin relative path
+    // On Cloudflare Pages (*.pages.dev) or static host, route API requests to Koyeb backend
+    if (window.location.hostname.includes('pages.dev') || window.location.hostname.includes('cloudflare')) {
+      return DEFAULT_BACKEND_URL;
+    }
+    // On same-origin hosting (e.g. apps.bot-hosting.cloud) use relative path
     return '';
   }
-  return '';
+  return DEFAULT_BACKEND_URL;
+}
+
+export function setApiUrl(url: string) {
+  if (typeof window !== 'undefined') {
+    if (!url || url.trim() === '' || url.trim() === DEFAULT_BACKEND_URL) {
+      localStorage.removeItem('backend_api_url');
+    } else {
+      localStorage.setItem('backend_api_url', url.trim().replace(/\/$/, ''));
+    }
+  }
 }
 
 class ApiClient {
