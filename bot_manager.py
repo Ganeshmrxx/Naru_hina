@@ -526,6 +526,14 @@ class BotManager:
             if "promoter" in bot_id and self.spam_enabled.get(bot_id, False):
                 self.enable_spam(bot_id)
 
+            # Keep Pyrogram client event loop alive so @Client.on_message listeners receive live incoming messages
+            stop_event = asyncio.Event()
+            bot_info["stop_event"] = stop_event
+            try:
+                await stop_event.wait()
+            except asyncio.CancelledError:
+                pass
+
         except Exception as e:
             err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
             if "AUTH_KEY_DUPLICATED" in err_msg:
@@ -579,6 +587,10 @@ class BotManager:
             self.status[bot_id]["is_running"] = False
             logging.info("NaruHina Filter Bot stopped", extra={"bot_id": bot_id})
             return {"status": "Stopped", "bot_id": bot_id}
+
+        if bot_info.get("stop_event"):
+            bot_info["stop_event"].set()
+            bot_info["stop_event"] = None
 
         if bot_info["instance"]:
             try:
