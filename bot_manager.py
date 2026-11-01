@@ -2312,7 +2312,56 @@ class BotManager:
             self.dialogs_cache = []
             self.dialogs_cache_time = 0
 
-            # Step 2: Record completion in MongoDB
+            # Step 2: CROSS-CHECK MONGODB GHOST CHANNELS (Reverse Reconciliation)
+            # Find any channel in Mongo collections (chats, forward_queue, xDataChannels)
+            # that is NOT in live Telegram dialogs (e.g. deleted or left in Telegram earlier)
+            live_channel_ids = {c.id for c in total_dialogs}
+            live_channel_ids.update({int(str(c.id).replace("-100", "").replace("-", "")) for c in total_dialogs})
+            ghost_purged_count = 0
+
+            if self.db_a is not None:
+                try:
+                    # Check chats collection
+                    for doc in list(self.db_a.chats.find({})):
+                        db_cid = doc.get("chat_id") or doc.get("_id")
+                        if db_cid:
+                            try:
+                                db_cid_int = int(db_cid)
+                                clean_db_cid = int(str(db_cid).replace("-100", "").replace("-", ""))
+                            except Exception:
+                                db_cid_int = db_cid
+                                clean_db_cid = db_cid
+
+                            if db_cid_int not in live_channel_ids and clean_db_cid not in live_channel_ids:
+                                self.db_a.chats.delete_one({"_id": doc["_id"]})
+                                self.db_a.forward_queue.delete_many({"chat_id": db_cid_int})
+                                ghost_purged_count += 1
+                except Exception as g_err:
+                    logging.warning(f"[HEALTH SCAN] Error purging ghost chats in DB A: {g_err}")
+
+            if self.db_b is not None:
+                try:
+                    # Check xDataChannels in Cluster B
+                    for doc in list(self.db_b.xDataChannels.find({})):
+                        db_cid = doc.get("_id")
+                        if db_cid:
+                            try:
+                                db_cid_int = int(db_cid)
+                                clean_db_cid = int(str(db_cid).replace("-100", "").replace("-", ""))
+                            except Exception:
+                                db_cid_int = db_cid
+                                clean_db_cid = db_cid
+
+                            if db_cid_int not in live_channel_ids and clean_db_cid not in live_channel_ids:
+                                self.db_b.xDataChannels.delete_one({"_id": db_cid})
+                                ghost_purged_count += 1
+                except Exception as gb_err:
+                    logging.warning(f"[HEALTH SCAN] Error purging ghost mappings in DB B: {gb_err}")
+
+            if ghost_purged_count > 0:
+                logging.info(f"[HEALTH SCAN] Purged {ghost_purged_count} ghost channel records from MongoDB that do not exist in Telegram.")
+
+            # Step 3: Record completion in MongoDB
             if self.db_a is not None:
                 try:
                     self.db_a.system_meta.update_one(
@@ -2322,6 +2371,7 @@ class BotManager:
                             "total_scanned": len(total_dialogs),
                             "accessible_count": len(accessible_list),
                             "banned_left_count": len(banned_left_list),
+                            "ghost_purged_count": ghost_purged_count,
                             "updated_at": datetime.now()
                         }},
                         upsert=True
@@ -2329,14 +2379,15 @@ class BotManager:
                 except Exception:
                     pass
 
-            # Step 3: Build & Send summary report to @ganeshmrxx
+            # Step 4: Build & Send summary report to @ganeshmrxx
             summary_text = (
                 f"🛡️ <b>[AllForward Weekly Health Scan Report]</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"📅 <b>Date:</b> {datetime.now().strftime('%d %b %Y, %I:%M %p')}\n"
-                f"📊 <b>Total Channels Scanned:</b> {len(total_dialogs)}\n"
+                f"📊 <b>Total Channels Scanned in Telegram:</b> {len(total_dialogs)}\n"
                 f"✅ <b>Accessible & Active Channels:</b> {len(accessible_list)}\n"
-                f"🚫 <b>Banned/Dead Channels Removed:</b> {len(banned_left_list)}\n"
+                f"🚫 <b>Banned Channels Left in Telegram:</b> {len(banned_left_list)}\n"
+                f"👻 <b>Ghost Channels Cleaned from MongoDB:</b> {ghost_purged_count}\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
             )
 
