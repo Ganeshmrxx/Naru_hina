@@ -164,12 +164,12 @@ async def start_api_server():
         try:
             import api_server
             import uvicorn
-            print(f"📡 Uvicorn running FastAPI app on 127.0.0.1:{api_port}...")
-            uvicorn.run(api_server.app, host="127.0.0.1", port=api_port, log_level="info", access_log=False)
+            print(f"📡 Uvicorn running FastAPI app on 0.0.0.0:{api_port}...")
+            uvicorn.run(api_server.app, host="0.0.0.0", port=api_port, log_level="info", access_log=False)
         except Exception as e:
             print(f"⚠️ Uvicorn thread failed: {e}")
             traceback.print_exc()
 
     api_thread = threading.Thread(target=run_uvicorn_thread, daemon=True, name="FastAPIServerThread")
     api_thread.start()
-    print(f"✅ FastAPI server thread launched on 127.0.0.1:{api_port}")
+    print(f"✅ FastAPI server thread launched on 0.0.0.0:{api_port}")
