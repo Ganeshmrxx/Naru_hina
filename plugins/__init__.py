@@ -66,6 +66,8 @@ async def web_server():
     web_app.router.add_get("/health", health_check)
     # 2. Reverse proxy for AllForward FastAPI admin APIs
     web_app.router.add_route("*", "/api/{tail:.*}", proxy_to_fastapi)
+    for prefix in ["forwarding", "bots", "telegram", "channels", "database", "mappings", "terabox", "naruhina", "stats", "errors"]:
+        web_app.router.add_route("*", f"/{prefix}/{{tail:.*}}", proxy_to_fastapi)
     # 3. Stream routes
     web_app.router.add_get("/stream/{channel_id}/{message_id}", streamfile_api)
     # 4. Standard bot routes

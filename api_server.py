@@ -78,6 +78,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def rewrite_prefix_middleware(request: Request, call_next):
+    path = request.scope.get("path", "")
+    if path not in ("/", "/docs", "/openapi.json", "/redoc", "/favicon.ico") and not path.startswith("/api"):
+        request.scope["path"] = f"/api{path}"
+    return await call_next(request)
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "AllForward FastAPI Backend"}
+
+
 # Initialize BotManager
 bot_manager = BotManager()
 
