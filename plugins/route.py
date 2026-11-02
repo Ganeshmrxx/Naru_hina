@@ -97,8 +97,10 @@ async def stream_handler(request: web.Request):
 
 @routes.get(r"/{token}", allow_head=True)
 async def stream_handler(request: web.Request):
+    token = request.match_info["token"]
+    if token.startswith("api") or token in ("health", "favicon.ico", "robots.txt"):
+        raise web.HTTPNotFound()
     try:
-        token = request.match_info["token"]
 
         try:
             data = serializer.loads(token)
