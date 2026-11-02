@@ -152,27 +152,24 @@ async def search_api(request):
 async def start_api_server():
     api_port = int(os.environ.get("API_PORT", 8081))
     print(f"🚀 Starting AllForward & NaruHina API Server on port {api_port}...")
-    try:
-        import sys
-        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        allforward_dir = os.path.join(root_dir, "allforward")
-        for p in [root_dir, allforward_dir]:
-            if p not in sys.path:
-                sys.path.insert(0, p)
-        import api_server
-        import uvicorn
-        config = uvicorn.Config(api_server.app, host="0.0.0.0", port=api_port, log_level="info", access_log=False)
-        server = uvicorn.Server(config)
-        await server.serve()
-    except Exception as e:
-        print(f"⚠️ Failed to launch FastAPI server: {e}, falling back to minimal aiohttp API...")
-        traceback.print_exc()
-        app = web.Application()
-        app.router.add_get("/stream/{channel_id}/{message_id}", streamfile_api)
-        app.router.add_get("/api/search", search_api)
-        app.router.add_get("/search", search_api)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", api_port)
-        await site.start()
-        print(f"✅ Fallback API Server started on port {api_port}")
+    import sys
+    import threading
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    allforward_dir = os.path.join(root_dir, "allforward")
+    for p in [root_dir, allforward_dir]:
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    
+    def run_uvicorn_thread():
+        try:
+            import api_server
+            import uvicorn
+            print(f"📡 Uvicorn running FastAPI app on 127.0.0.1:{api_port}...")
+            uvicorn.run(api_server.app, host="127.0.0.1", port=api_port, log_level="info", access_log=False)
+        except Exception as e:
+            print(f"⚠️ Uvicorn thread failed: {e}")
+            traceback.print_exc()
+
+    api_thread = threading.Thread(target=run_uvicorn_thread, daemon=True, name="FastAPIServerThread")
+    api_thread.start()
+    print(f"✅ FastAPI server thread launched on 127.0.0.1:{api_port}")
