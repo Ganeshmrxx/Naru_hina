@@ -1,0 +1,215 @@
+from aiohttp import web
+import re
+import math
+import secrets
+import time
+import mimetypes
+from logging_helper import LOGGER
+from aiohttp.http_exceptions import BadStatusLine
+from Lucia.Bot import multi_clients, work_loads, SilentX
+from Lucia.server.exceptions import FIleNotFound, InvalidHash
+from Lucia.zzint import StartTime, __version__
+from Lucia.util.custom_dl import ByteStreamer
+from Lucia.util.time_format import get_readable_time
+from Lucia.util.render_template import render_page
+from itsdangerous import URLSafeSerializer, BadSignature
+from info import *
+
+routes = web.RouteTableDef()
+SECRET_KEY = os.getenv("SECRET_KEY") or "SUPER_SECRET_KEY_CHANGE_THIS"
+serializer = URLSafeSerializer(SECRET_KEY)
+
+@routes.get("/", allow_head=True)
+async def root_route_handler(request):
+    return web.json_response("Telegram - @SilentXBotz")
+
+@routes.options(r"/{path:.*}")
+async def options_handler(request):
+    return web.Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+        }
+    )
+
+
+"""
+@routes.get(r"/watch/{path:\S+}", allow_head=True)
+async def stream_handler(request: web.Request):
+    try:
+        path = request.match_info["path"]
+        match = re.search(r"^([a-zA-Z0-9_-]{6})(\d+)$", path)
+        if match:
+            secure_hash = match.group(1)
+            id = int(match.group(2))
+        else:
+            id = int(re.search(r"(\d+)(?:\/\S+)?", path).group(1))
+            cid = int(re.search(r"(\d+)(?:\/\S+)?", path).group(2))
+            secure_hash = request.rel_url.query.get("hash")
+        return web.Response(text=await render_page(id, secure_hash,cid), content_type='text/html')
+    except InvalidHash as e:
+        raise web.HTTPForbidden(text=e.message)
+    except FIleNotFound as e:
+        raise web.HTTPNotFound(text=e.message)
+    except (AttributeError, BadStatusLine, ConnectionResetError):
+        raise web.HTTPNotFound(text="File not found or connection lost")
+
+    except Exception as e:
+        LOGGER.error(e.with_traceback(None))
+        raise web.HTTPInternalServerError(text="An internal error has occurred.")
+"""
+"""
+@routes.get(r"/{path:\S+}", allow_head=True)
+async def stream_handler(request: web.Request):
+    try:
+        path = request.match_info["path"]
+        match = re.search(r"^([a-zA-Z0-9_-]{6})(\d+)$", path)
+        if match:
+            secure_hash = match.group(1)
+            id = int(match.group(2))
+        else:
+            id = int(re.search(r"(\d+)(?:\/\S+)?", path).group(1))
+            secure_hash = request.rel_url.query.get("hash")
+        # 🔥 CHANNEL ID FROM LINK
+        channel_id = request.rel_url.query.get("cid")
+        if not channel_id:
+            return web.Response(status=400, text="Missing channel id")
+
+        channel_id = int(channel_id)
+
+        return await media_streamer(
+            request,
+            id,
+            secure_hash,
+            channel_id
+        )   
+    except InvalidHash as e:
+        raise web.HTTPForbidden(text=e.message)
+    except FIleNotFound as e:
+        raise web.HTTPNotFound(text=e.message)
+    except (AttributeError, BadStatusLine, ConnectionResetError):
+        raise web.HTTPNotFound(text="Stream unavailable")
+    except Exception as e:
+        LOGGER.error(e.with_traceback(None))
+        raise web.HTTPInternalServerError(text="An internal error has occurred.")
+"""
+
+@routes.get(r"/{token}", allow_head=True)
+async def stream_handler(request: web.Request):
+    try:
+        token = request.match_info["token"]
+
+        try:
+            data = serializer.loads(token)
+        except BadSignature:
+            raise web.HTTPForbidden(text="Invalid or tampered link")
+
+        # 🔥 Expiry check
+        if data["exp"] < int(time.time()):
+            raise web.HTTPForbidden(text="Link expired")
+
+        message_id = data["id"]
+        channel_id = data["cid"]
+        secure_hash = data["hash"]
+
+        return await media_streamer(
+            request,
+            message_id,
+            secure_hash,
+            channel_id
+        )
+
+    except Exception as e:
+        LOGGER.error(str(e))
+        raise web.HTTPInternalServerError(text="Invalid stream link")
+        
+class_cache = {}
+
+async def media_streamer(request: web.Request, id: int, secure_hash: str, channel_id: int):
+    range_header = request.headers.get("Range", 0)
+    
+    index = min(work_loads, key=work_loads.get)
+    faster_client = multi_clients[index]
+    
+    if MULTI_CLIENT:
+        LOGGER.info(f"Client {index} is now serving {request.remote}")
+
+    if faster_client in class_cache:
+        tg_connect = class_cache[faster_client]
+        LOGGER.info(f"Using cached ByteStreamer object for client {index}")
+    else:
+        LOGGER.info(f"Creating new ByteStreamer object for client {index}")
+        tg_connect = ByteStreamer(faster_client)
+        class_cache[faster_client] = tg_connect
+    LOGGER.info("before calling get_file_properties")
+    file_id = await tg_connect.get_file_properties(id,channel_id)
+    LOGGER.info("after calling get_file_properties")
+    
+    if file_id.unique_id[:6] != secure_hash:
+        LOGGER.info(f"Invalid hash for message with ID {id}")
+        raise InvalidHash
+    
+    file_size = file_id.file_size
+
+    if range_header:
+        from_bytes, until_bytes = range_header.replace("bytes=", "").split("-")
+        from_bytes = int(from_bytes)
+        until_bytes = int(until_bytes) if until_bytes else file_size - 1
+    else:
+        from_bytes = request.http_range.start or 0
+        until_bytes = (request.http_range.stop or file_size) - 1
+
+    if (until_bytes > file_size) or (from_bytes < 0) or (until_bytes < from_bytes):
+        return web.Response(
+            status=416,
+            body="416: Range not satisfiable",
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    chunk_size = 1024 * 1024
+    until_bytes = min(until_bytes, file_size - 1)
+
+    offset = from_bytes - (from_bytes % chunk_size)
+    first_part_cut = from_bytes - offset
+    last_part_cut = until_bytes % chunk_size + 1
+
+    req_length = until_bytes - from_bytes + 1
+    part_count = math.ceil(until_bytes / chunk_size) - math.floor(offset / chunk_size)
+    body = tg_connect.yield_file(
+        file_id, index, offset, first_part_cut, last_part_cut, part_count, chunk_size
+    )
+
+    mime_type = file_id.mime_type
+    file_name = file_id.file_name
+    disposition = "attachment"
+
+    if mime_type:
+        if not file_name:
+            try:
+                file_name = f"{secrets.token_hex(2)}.{mime_type.split('/')[1]}"
+            except (IndexError, AttributeError):
+                file_name = f"{secrets.token_hex(2)}.unknown"
+    else:
+        if file_name:
+            mime_type = mimetypes.guess_type(file_id.file_name)
+        else:
+            mime_type = "application/octet-stream"
+            file_name = f"{secrets.token_hex(2)}.unknown"
+
+    return web.Response(
+        status=206 if range_header else 200,
+        body=body,
+        headers={
+            # 🔥 CORS (REQUIRED)
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range",
+            "Content-Type": f"{mime_type}",
+            "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
+            "Content-Length": str(req_length),
+            "Content-Disposition": f'{disposition}; filename="{file_name}"',
+            "Accept-Ranges": "bytes",
+        },
+    )

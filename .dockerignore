@@ -1,0 +1,15 @@
+.git
+.github
+*.zip
+*.md
+*.log
+allforward/admin/node_modules/
+allforward/admin/.next/
+allforward/admin/out/
+allforward/cache/
+allforward/__pycache__/
+allforward/**/__pycache__/
+node_modules/
+.next/
+out/
+__pycache__/

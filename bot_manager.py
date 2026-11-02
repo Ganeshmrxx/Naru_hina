@@ -113,10 +113,15 @@ def is_terabox_content(msg):
 
 def is_video_message(msg):
     """Check if message is a video or video document."""
-    if msg.video:
+    if getattr(msg, "video", None):
         return True
-    if msg.document and getattr(msg.document, 'mime_type', '').startswith('video/'):
-        return True
+    if getattr(msg, "document", None):
+        mime = (getattr(msg.document, "mime_type", "") or "").lower()
+        if mime.startswith("video/"):
+            return True
+        fname = (getattr(msg.document, "file_name", "") or "").lower()
+        if any(fname.endswith(ext) for ext in (".mp4", ".mkv", ".mov", ".avi", ".webm", ".ts", ".flv", ".m4v", ".wmv")):
+            return True
     return False
 
 def get_auto_target(msg, chat_type_str="channel"):

@@ -1,0 +1,2642 @@
+import os
+import sys
+import json
+import asyncio
+import logging
+import time
+import uuid
+from collections import deque
+from datetime import datetime
+from typing import Optional
+
+# Fix for Python 3.14 where no event loop exists in MainThread on module import
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+# Import bot classes
+from MovieForwarderBot import MovieForwarderBot
+from TeraBoxModifierBot import TeraBoxModifierBot
+from BackupForwarderBot import BackupForwarderBot
+from GeneralDataModifierBot import GeneralDataModifierBot
+import re
+from pyrogram.errors import FloodWait, RPCError
+from pyrogram.types import InputMediaPhoto
+from pyrogram import raw, utils
+from pyrogram.raw.functions.messages import GetDialogFilters, UpdateDialogFilter
+from pyrogram.raw.types import DialogFilter
+
+class LogCaptureHandler(logging.Handler):
+    def __init__(self, log_buffer, error_buffer):
+        super().__init__()
+        self.log_buffer = log_buffer
+        self.error_buffer = error_buffer
+
+    def emit(self, record):
+        try:
+            bot_id = getattr(record, "bot_id", "system")
+            msg_str = str(self.format(record)).encode("ascii", errors="ignore").decode("ascii")
+            log_entry = {
+                "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+                "bot_id": bot_id,
+                "level": record.levelname,
+                "message": msg_str
+            }
+            self.log_buffer.append(log_entry)
+            if record.levelno >= logging.ERROR:
+                self.error_buffer.append(log_entry)
+        except Exception:
+            self.handleError(record)
+
+def build_caption(original_caption, chat_id, chat_title, username=None):
+    clean_id = str(chat_id).replace("-100", "").replace("-", "")
+    if username:
+        user_tag = f"@{username.lstrip('@')}"
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {user_tag}\nchannel link = https://t.me/{username.lstrip('@')}"
+    else:
+        # Private channel link fallback via internal /c/ path or title
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}\nchannel link = https://t.me/c/{clean_id}/1"
+
+    if not original_caption:
+        return footer.strip()
+    max_orig_len = 1024 - len(footer) - 5
+    if len(original_caption) > max_orig_len:
+        original_caption = original_caption[:max_orig_len] + "..."
+    return f"{original_caption}{footer}"
+
+def build_text(original_text, chat_id, chat_title, username=None):
+    clean_id = str(chat_id).replace("-100", "").replace("-", "")
+    if username:
+        user_tag = f"@{username.lstrip('@')}"
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {user_tag}\nchannel link = https://t.me/{username.lstrip('@')}"
+    else:
+        footer = f"\n\nchannel id = {chat_id}\nchannel name = {chat_title}\nchannel link = https://t.me/c/{clean_id}/1"
+
+    if not original_text:
+        return footer.strip()
+    max_orig_len = 4096 - len(footer) - 5
+    if len(original_text) > max_orig_len:
+        original_text = original_text[:max_orig_len] + "..."
+    return f"{original_text}{footer}"
+
+TERABOX_KEYWORDS = [
+    "terabox", "tera box", "teraboxapp", "1024tera",
+    "teraboxlink", "terashare", "freeterabox"
+]
+TERABOX_DOMAINS = [
+    "terabox.com", "teraboxapp.com", "1024terabox.com",
+    "terafileshare.com", "terasharelink.com", "momerybox.com",
+    "4funbox.com", "mirrobox.com", "nephobox.com",
+    "freeterabox.com", "tboxlink.com"
+]
+
+# Target channel IDs
+VIDEO_TARGET = -1004401442087   # DBXVideos
+TERA_TARGET  = -1004337870091   # DBXTera
+MIX_TARGET   = -1003253102275   # Mix (ignored)
+TARGET_CHANNELS = {VIDEO_TARGET, TERA_TARGET, MIX_TARGET,
+                   4401442087, 4337870091, 3253102275}
+
+def is_terabox_content(msg):
+    """Check if a Pyrogram message contains TeraBox links/references in caption or text."""
+    text = ((getattr(msg, 'caption', None) or '') + ' ' + (getattr(msg, 'text', None) or '')).lower()
+    if not text.strip():
+        return False
+    for kw in TERABOX_KEYWORDS:
+        if kw in text:
+            return True
+    for domain in TERABOX_DOMAINS:
+        if domain in text:
+            return True
+    return False
+
+def is_video_message(msg):
+    """Check if message is a video or video document."""
+    if getattr(msg, "video", None):
+        return True
+    if getattr(msg, "document", None):
+        mime = (getattr(msg.document, "mime_type", "") or "").lower()
+        if mime.startswith("video/"):
+            return True
+        fname = (getattr(msg.document, "file_name", "") or "").lower()
+        if any(fname.endswith(ext) for ext in (".mp4", ".mkv", ".mov", ".avi", ".webm", ".ts", ".flv", ".m4v", ".wmv")):
+            return True
+    return False
+
+def get_auto_target(msg, chat_type_str="channel"):
+    """Determine target channel for a message based on exact user content rules:
+    1. Single Video (or video document) -> DBXVideos (-1004401442087)
+       (unless it has TeraBox link, then -> DBXTera)
+    2. Grouped Gallery (Albums: Photo + Video mix or photos/videos) -> DBXVideos (-1004401442087)
+       (unless it has TeraBox link, then -> DBXTera)
+    3. Single Photo:
+       - If contains TeraBox link -> DBXTera (-1004337870091)
+       - If NO TeraBox link -> None (SKIP permanently)
+    4. Text-only / Promo Ads / Plain text without media -> None (SKIP permanently)
+    5. Groups/Supergroups: Only videos allowed.
+    """
+    tera = is_terabox_content(msg)
+    is_vid = is_video_message(msg)
+    is_photo = bool(msg.photo)
+    is_album = bool(getattr(msg, 'media_group_id', None))
+    is_group = (chat_type_str in ("group", "supergroup"))
+
+    # RULE 1: GROUPED GALLERY / ALBUMS
+    if is_album:
+        if tera:
+            return TERA_TARGET  # DBXTera if TeraBox link present
+        # Grouped gallery with pic+video or any album media goes to DBXVideos
+        return VIDEO_TARGET
+
+    # RULE 2: SINGLE VIDEO
+    if is_vid:
+        return TERA_TARGET if tera else VIDEO_TARGET
+
+    # RULE 3: SINGLE PHOTO
+    if is_photo:
+        if is_group:
+            return None  # Skip all group photos
+        # Only photos with TeraBox links go to DBXTera, otherwise skip
+        return TERA_TARGET if tera else None
+
+    # RULE 4: Plain text / Promo ads without media -> SKIP
+    return None
+
+
+class BotManager:
+    BOT_CONFIGS = {
+        "movie_forwarder": {
+            "name": "Movie Forwarder",
+            "class": MovieForwarderBot,
+            "session_type": "userbot",
+            "description": "Filters and mirrors large video files (>150MB)"
+        },
+        "terabox_modifier": {
+            "name": "TeraBox Modifier",
+            "class": TeraBoxModifierBot,
+            "session_type": "bot_token",
+            "description": "Rewrites TeraBox links & auto-posts videos"
+        },
+        "backup_forwarder": {
+            "name": "Backup Forwarder",
+            "class": BackupForwarderBot,
+            "session_type": "userbot",
+            "description": "Channel-to-channel live & bulk media forwarding"
+        },
+        "data_modifier": {
+            "name": "General Data Modifier",
+            "class": GeneralDataModifierBot,
+            "session_type": "bot_token",
+            "description": "Interactive media modifier with inline remove button"
+        },
+        "naruhina_bot": {
+            "name": "NaruHina Filter & Stream Bot",
+            "class": None,
+            "session_type": "bot_token",
+            "description": "Lucia auto-filter, channel media indexer & web video streaming bot"
+        },
+    }
+
+    def __init__(self):
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        self.log_buffer = deque(maxlen=1000)
+        self.error_buffer = deque(maxlen=1000)
+
+        # Custom logging setup
+        handler = LogCaptureHandler(self.log_buffer, self.error_buffer)
+        formatter = logging.Formatter('%(message)s')
+        handler.setFormatter(formatter)
+        
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+        self.bots = {
+            bot_id: {
+                "name": cfg["name"],
+                "class": cfg["class"],
+                "session_type": cfg["session_type"],
+                "instance": None,
+                "process": None,
+                "task": None
+            }
+            for bot_id, cfg in self.BOT_CONFIGS.items()
+        }
+
+        self.status = {
+            bot_id: {
+                "bot_id": bot_id,
+                "name": cfg["name"],
+                "session_type": cfg["session_type"],
+                "is_running": False,
+                "started_at": None,
+                "last_heartbeat": None,
+                "last_activity": None,
+                "last_error": None,
+                "messages_processed": 0,
+                "spam_enabled": False,
+                "promote_enabled": True if "promoter" in bot_id else False
+            }
+            for bot_id, cfg in self.BOT_CONFIGS.items()
+        }
+
+        self.spam_enabled = {}
+        self.promote_enabled = {}
+        self.background_tasks = {}
+        self.forward_jobs = {}  # In-memory tracking for active bulk forward jobs
+        self.folder_sync_status = {}  # chat_id -> {"status": "syncing"|"completed"|"queued", "processed": int}
+        self.auto_sync_pending = []  # List of channels currently queued for auto-sync
+        self.dialogs_cache = []
+        self.dialogs_cache_time = 0
+        self.db_a = None
+        self.db_b = None
+        self._heartbeat_task = None
+        self._auto_folder_sync_task = None
+        self._public_forward_lock = asyncio.Lock()
+        self._private_forward_lock = asyncio.Lock()
+        self._dialogs_lock = asyncio.Lock()
+        self.chat_info_cache = {}  # chat_id -> {"title": str, "username": str|None, "is_public": bool}
+        self.worker_bots = []
+        self.worker_bots_initialized = False
+        self.worker_bot_idx = 0
+        self.worker_bot_counter = 0
+        self._dialog_filters_cache = None
+        self._dialog_filters_cache_time = 0
+        self._weekly_health_task = None
+        self.health_scan_status = {
+            "is_running": False,
+            "started_at": None,
+            "completed_at": None,
+            "total_scanned": 0,
+            "accessible_count": 0,
+            "banned_left_count": 0,
+            "current_chat": None,
+            "last_summary": None
+        }
+
+    async def get_dialog_filters(self, client, max_age: int = 300) -> list:
+        """Fetch Telegram dialog filters with 5-minute cache to prevent MTProto timeouts."""
+        now = time.time()
+        if self._dialog_filters_cache is not None and (now - self._dialog_filters_cache_time < max_age):
+            return self._dialog_filters_cache
+        if not client or not getattr(client, "is_connected", False):
+            return self._dialog_filters_cache or []
+        try:
+            from pyrogram.raw.functions.messages import GetDialogFilters
+            filters = await asyncio.wait_for(client.invoke(GetDialogFilters()), timeout=8.0)
+            if filters:
+                self._dialog_filters_cache = filters
+                self._dialog_filters_cache_time = now
+            return self._dialog_filters_cache or []
+        except Exception as fe:
+            logging.warning(f"Could not fetch dialog filters (using cache fallback): {fe}")
+            return self._dialog_filters_cache or []
+
+    async def get_channel_info(self, chat_id: int) -> dict:
+        """Helper to get and cache channel title, username and privacy status."""
+        if chat_id in self.chat_info_cache:
+            return self.chat_info_cache[chat_id]
+        client = None
+        for b_id in ["backup_forwarder", "promoter_1", "promoter_2", "movie_forwarder"]:
+            inst = self.bots[b_id].get("instance")
+            if inst and getattr(inst, "is_connected", False):
+                client = inst
+                break
+        info = {"title": str(chat_id), "username": None, "is_public": False}
+        if client:
+            try:
+                c = await asyncio.wait_for(client.get_chat(chat_id), timeout=8.0)
+                uname = getattr(c, "username", None)
+                title = getattr(c, "title", "") or str(chat_id)
+                info = {"title": title, "username": uname, "is_public": bool(uname)}
+                self.chat_info_cache[chat_id] = info
+            except Exception as e:
+                logging.warning(f"Could not get chat info for {chat_id}: {e}")
+        return info
+
+    async def _init_worker_bots_if_needed(self):
+        """Initializes 12 worker bots pool for public channel copying.
+        Bot 1 is started immediately so copying starts instantly.
+        Remaining bots (2 to 12) are loaded gradually in the background with 2.5s spacing
+        to prevent server freeze and Telegram DC auth exchange bottlenecks.
+        """
+        if self.worker_bots_initialized:
+            return
+        self.worker_bots_initialized = True
+        try:
+            from config import Config
+            from pyrogram import Client
+            all_tokens = getattr(Config, "BOT_WORKERS", [])
+            if not all_tokens:
+                return
+
+            # Start Bot 1 synchronously so copy can begin immediately
+            first_token = all_tokens[0]
+            logging.info(f"[WORKER POOL] Initializing primary Worker Bot (1/{len(all_tokens)})...")
+            try:
+                wb1 = Client(
+                    "botmgr_worker_1",
+                    api_id=Config.API_ID2,
+                    api_hash=Config.API_HASH2,
+                    bot_token=first_token
+                )
+                await asyncio.wait_for(wb1.start(), timeout=35.0)
+                self.worker_bots.append(wb1)
+                me = await wb1.get_me()
+                logging.info(f"[WORKER POOL] Primary worker bot ready as @{getattr(me, 'username', 'bot')} ({getattr(me, 'id', 'unknown')}).")
+            except Exception as e:
+                logging.warning(f"[WORKER POOL] Primary worker bot start failed: {e}")
+
+            # Background task to connect the remaining 11 worker bots gradually
+            if len(all_tokens) > 1:
+                asyncio.create_task(self._load_remaining_worker_bots(all_tokens[1:]))
+
+        except Exception as e:
+            logging.error(f"[WORKER POOL] Initialization error: {e}")
+
+    async def _load_remaining_worker_bots(self, remaining_tokens: list):
+        """Gradually connects worker bots 2 through 12 in the background."""
+        from config import Config
+        from pyrogram import Client
+        for idx, token in enumerate(remaining_tokens, start=2):
+            await asyncio.sleep(2.5)  # Safe spacing between Telegram DC handshakes
+            try:
+                wb = Client(
+                    f"botmgr_worker_{idx}",
+                    api_id=Config.API_ID2,
+                    api_hash=Config.API_HASH2,
+                    bot_token=token
+                )
+                await asyncio.wait_for(wb.start(), timeout=35.0)
+                self.worker_bots.append(wb)
+                me = await wb.get_me()
+                logging.info(f"[WORKER POOL] Worker bot {idx}/12 joined pool: @{getattr(me, 'username', 'bot')}")
+            except Exception as e:
+                logging.warning(f"[WORKER POOL] Worker bot {idx} failed to start: {e}")
+        logging.info(f"[WORKER POOL] All 12 worker bots pool ready! Active in rotation: {len(self.worker_bots)}")
+
+    def _get_next_worker_bot(self):
+        """Rotates through worker bots pool, switching bot every 10 messages."""
+        if not getattr(self, "worker_bots", []):
+            return None
+        active = [b for b in self.worker_bots if getattr(b, "is_connected", False)]
+        if not active:
+            active = self.worker_bots
+        bot = active[self.worker_bot_idx % len(active)]
+        self.worker_bot_counter += 1
+        if self.worker_bot_counter >= 10:
+            self.worker_bot_counter = 0
+            self.worker_bot_idx = (self.worker_bot_idx + 1) % len(active)
+            next_bot = active[self.worker_bot_idx % len(active)]
+            next_name = getattr(getattr(next_bot, 'me', None), 'username', f"Worker_{self.worker_bot_idx+1}")
+            logging.info(f"[WORKER ROTATION] Switched to next worker bot in pool: @{next_name} (Active in pool: {len(active)}/12)")
+        return bot
+
+    def set_databases(self, db_a, db_b):
+        self.db_a = db_a
+        self.db_b = db_b
+
+    def start_auto_folder_sync(self):
+        if self._auto_folder_sync_task is None:
+            self._auto_folder_sync_task = asyncio.create_task(self._auto_folder_sync_runner())
+
+    def start_weekly_health_scanner(self):
+        if self._weekly_health_task is None:
+            self._weekly_health_task = asyncio.create_task(self._weekly_health_loop())
+
+    def start_heartbeat(self):
+        if self._heartbeat_task is None:
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _heartbeat_loop(self):
+        gc_ticks = 0
+        while True:
+            try:
+                now_str = datetime.now().isoformat()
+                for bot_id, bot_info in self.bots.items():
+                    if bot_id == "naruhina_bot":
+                        proc = bot_info.get("process")
+                        is_conn = (proc is not None and proc.returncode is None)
+                        self.status[bot_id]["is_running"] = is_conn
+                        if is_conn:
+                            self.status[bot_id]["last_heartbeat"] = now_str
+                        continue
+
+                    inst = bot_info.get("instance")
+                    if inst is not None:
+                        is_conn = getattr(inst, "is_connected", False)
+                        self.status[bot_id]["is_running"] = bool(is_conn)
+                        if is_conn:
+                            self.status[bot_id]["last_heartbeat"] = now_str
+                    else:
+                        self.status[bot_id]["is_running"] = False
+
+                # Periodic Garbage Collection every ~3 minutes (36 * 5s = 180s) to reclaim container RAM
+                gc_ticks += 1
+                if gc_ticks >= 36:
+                    gc_ticks = 0
+                    import gc
+                    gc.collect()
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+
+    def get_logs(self, bot_id=None, level=None, limit=100):
+        logs = list(self.log_buffer)
+        if bot_id:
+            logs = [log for log in logs if log["bot_id"] == bot_id]
+        if level:
+            logs = [log for log in logs if log["level"] == level.upper()]
+        return logs[-limit:]
+
+    def get_errors(self, limit=50):
+        return list(self.error_buffer)[-limit:]
+
+    async def _run_bot(self, bot_id: str):
+        bot_info = self.bots[bot_id]
+
+        if bot_id == "naruhina_bot":
+            naruhina_dir = os.getenv(
+                "NARUHINA_DIR",
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Naru_hina-SilentXBotz", "Naru_hina-SilentXBotz"))
+            )
+            bot_file = os.path.join(naruhina_dir, "bot.py")
+            if not os.path.exists(bot_file):
+                err_msg = f"NaruHina bot.py not found at {bot_file}"
+                logging.error(err_msg, extra={"bot_id": bot_id})
+                self.status[bot_id]["last_error"] = err_msg
+                self.status[bot_id]["is_running"] = False
+                return
+
+            try:
+                self.status[bot_id]["is_running"] = True
+                self.status[bot_id]["started_at"] = datetime.now().isoformat()
+                self.status[bot_id]["last_heartbeat"] = datetime.now().isoformat()
+                self.status[bot_id]["last_error"] = None
+                logging.info(f"Starting NaruHina Filter Bot from {naruhina_dir}...", extra={"bot_id": bot_id})
+
+                # Prepare environment variables including frontend-saved configs
+                sub_env = os.environ.copy()
+                config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "naruhina_config.json")
+                if os.path.isfile(config_file):
+                    try:
+                        with open(config_file, "r", encoding="utf-8") as cf:
+                            saved_cfg = json.load(cf)
+                        for k, v in saved_cfg.items():
+                            if v is not None and str(v).strip():
+                                sub_env[str(k)] = str(v).strip()
+                    except Exception as ce:
+                        logging.warning(f"Could not load naruhina_config.json: {ce}", extra={"bot_id": bot_id})
+
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-u",
+                    "bot.py",
+                    cwd=naruhina_dir,
+                    env=sub_env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT
+                )
+                bot_info["process"] = proc
+
+                while proc.returncode is None:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    decoded = line.decode("utf-8", errors="replace").strip()
+                    if decoded:
+                        level = logging.ERROR if any(k in decoded.lower() for k in ["error", "exception", "traceback", "failed"]) else logging.INFO
+                        logging.log(level, decoded, extra={"bot_id": bot_id})
+
+                await proc.wait()
+                self.status[bot_id]["is_running"] = False
+                bot_info["process"] = None
+                logging.info("NaruHina Filter Bot process exited.", extra={"bot_id": bot_id})
+                return
+            except Exception as e:
+                err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
+                logging.error(f"Error running {bot_id}: {err_msg}", extra={"bot_id": bot_id})
+                self.status[bot_id]["last_error"] = err_msg
+                self.status[bot_id]["is_running"] = False
+                bot_info["process"] = None
+                return
+
+        bot_info["instance"] = bot_info["class"]()
+        try:
+            self.status[bot_id]["is_running"] = True
+            self.status[bot_id]["started_at"] = datetime.now().isoformat()
+            self.status[bot_id]["last_heartbeat"] = datetime.now().isoformat()
+            self.status[bot_id]["last_error"] = None
+            logging.info(f"Starting {bot_id}...", extra={"bot_id": bot_id})
+            await bot_info["instance"].start()
+            logging.info(f"{bot_id} started successfully", extra={"bot_id": bot_id})
+            if bot_id in ["backup_forwarder", "movie_forwarder"]:
+                self.dialogs_cache = None
+                self.dialogs_cache_time = 0
+
+            # Check if promotion task should be launched
+            if "promoter" in bot_id and self.promote_enabled.get(bot_id, False):
+                self.enable_promote(bot_id)
+
+            # Check if spam task should be launched
+            if "promoter" in bot_id and self.spam_enabled.get(bot_id, False):
+                self.enable_spam(bot_id)
+
+            # Keep Pyrogram client event loop alive so @Client.on_message listeners receive live incoming messages
+            stop_event = asyncio.Event()
+            bot_info["stop_event"] = stop_event
+            try:
+                await stop_event.wait()
+            except asyncio.CancelledError:
+                pass
+
+        except Exception as e:
+            err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
+            if "AUTH_KEY_DUPLICATED" in err_msg:
+                logging.error(f"Duplicate auth key for {bot_id}: session used elsewhere. Please regenerate session at /session UI.", extra={"bot_id": bot_id})
+                self.status[bot_id]["last_error"] = "AUTH_KEY_DUPLICATED: Session used elsewhere. Regenerate via /session UI."
+            else:
+                logging.error(f"Error running {bot_id}: {err_msg}", extra={"bot_id": bot_id})
+                self.status[bot_id]["last_error"] = err_msg
+            self.status[bot_id]["is_running"] = False
+            bot_info["instance"] = None
+
+    async def start_bot(self, bot_id: str) -> dict:
+        if bot_id not in self.bots:
+            return {"error": "Invalid bot ID"}
+        if self.status[bot_id]["is_running"]:
+            return {"status": "Already running", "bot_id": bot_id}
+        
+        self.bots[bot_id]["task"] = asyncio.create_task(self._run_bot(bot_id))
+        return {"status": "Started", "bot_id": bot_id}
+
+    async def stop_bot(self, bot_id: str) -> dict:
+        if bot_id not in self.bots:
+            return {"error": "Invalid bot ID"}
+        if not self.status[bot_id]["is_running"] and self.bots[bot_id]["instance"] is None:
+            return {"status": "Not running", "bot_id": bot_id}
+
+        # Cancel any background tasks for this bot
+        for task_key in list(self.background_tasks.keys()):
+            if task_key.startswith(bot_id):
+                t = self.background_tasks.pop(task_key, None)
+                if t:
+                    t.cancel()
+
+        if bot_id == "naruhina_bot":
+            proc = bot_info.get("process")
+            if proc:
+                try:
+                    proc.terminate()
+                    for _ in range(10):
+                        if proc.returncode is not None:
+                            break
+                        await asyncio.sleep(0.3)
+                    if proc.returncode is None:
+                        proc.kill()
+                except Exception as e:
+                    logging.error(f"Error stopping NaruHina bot: {e}", extra={"bot_id": bot_id})
+                bot_info["process"] = None
+            if bot_info.get("task"):
+                bot_info["task"].cancel()
+                bot_info["task"] = None
+            self.status[bot_id]["is_running"] = False
+            logging.info("NaruHina Filter Bot stopped", extra={"bot_id": bot_id})
+            return {"status": "Stopped", "bot_id": bot_id}
+
+        if bot_info.get("stop_event"):
+            bot_info["stop_event"].set()
+            bot_info["stop_event"] = None
+
+        if bot_info["instance"]:
+            try:
+                await bot_info["instance"].stop()
+            except Exception as e:
+                err_msg = str(e).encode("ascii", errors="ignore").decode("ascii")
+                logging.error(f"Error stopping {bot_id}: {err_msg}", extra={"bot_id": bot_id})
+        
+        if bot_info["task"]:
+            bot_info["task"].cancel()
+        
+        self.status[bot_id]["is_running"] = False
+        bot_info["instance"] = None
+        bot_info["task"] = None
+        logging.info(f"{bot_id} stopped", extra={"bot_id": bot_id})
+        return {"status": "Stopped", "bot_id": bot_id}
+
+    async def restart_bot(self, bot_id: str) -> dict:
+        await self.stop_bot(bot_id)
+        await asyncio.sleep(2)
+        return await self.start_bot(bot_id)
+
+    def get_bot_status(self, bot_id: str) -> dict:
+        if bot_id not in self.status:
+            return {"error": "Invalid bot ID"}
+        if bot_id == "naruhina_bot":
+            proc = self.bots[bot_id].get("process")
+            self.status[bot_id]["is_running"] = (proc is not None and proc.returncode is None)
+            return self.status[bot_id]
+
+        # Update dynamic fields
+        inst = self.bots[bot_id].get("instance")
+        if inst is not None:
+            self.status[bot_id]["is_running"] = bool(getattr(inst, "is_connected", False))
+        return self.status[bot_id]
+
+    def get_all_statuses(self) -> dict:
+        for bot_id in self.bots:
+            self.get_bot_status(bot_id)
+        return self.status
+
+    async def start_all(self):
+        # Default bots started by main.py plus backup_forwarder for real-time channel routing
+        default_bots = [b for b in ["movie_forwarder", "terabox_modifier", "backup_forwarder"] if b in self.bots]
+        for bot_id in default_bots:
+            await self.start_bot(bot_id)
+            await asyncio.sleep(2)
+
+    async def stop_all(self):
+        for bot_id in self.bots:
+            if self.status[bot_id]["is_running"] or self.bots[bot_id]["instance"] is not None:
+                await self.stop_bot(bot_id)
+
+    def enable_spam(self, bot_id: str):
+        if bot_id in self.spam_enabled:
+            self.spam_enabled[bot_id] = True
+            self.status[bot_id]["spam_enabled"] = True
+            try:
+                from main import spam_groups
+                instance = self.bots[bot_id]["instance"]
+                if instance and getattr(instance, "is_connected", False):
+                    # spam_groups requires (bot, bot_name)
+                    task_name = f"{bot_id}_spam"
+                    if task_name in self.background_tasks:
+                        self.background_tasks[task_name].cancel()
+                    self.background_tasks[task_name] = asyncio.create_task(spam_groups(instance, bot_id))
+                    logging.info(f"Enabled spam loop for {bot_id}", extra={"bot_id": bot_id})
+                    return {"status": "Spam task started", "bot_id": bot_id}
+                else:
+                    return {"status": "Spam enabled (bot not currently connected)", "bot_id": bot_id}
+            except Exception as e:
+                return {"error": str(e)}
+        return {"error": "Bot does not support spam"}
+
+    def disable_spam(self, bot_id: str):
+        if bot_id in self.spam_enabled:
+            self.spam_enabled[bot_id] = False
+            self.status[bot_id]["spam_enabled"] = False
+            task = self.background_tasks.pop(f"{bot_id}_spam", None)
+            if task:
+                task.cancel()
+            logging.info(f"Disabled spam loop for {bot_id}", extra={"bot_id": bot_id})
+            return {"status": "Spam task disabled", "bot_id": bot_id}
+        return {"error": "Bot does not support spam"}
+
+    def enable_promote(self, bot_id: str):
+        if bot_id in self.promote_enabled:
+            self.promote_enabled[bot_id] = True
+            self.status[bot_id]["promote_enabled"] = True
+            try:
+                from main import promote_ganeshmrxx
+                instance = self.bots[bot_id]["instance"]
+                if instance and getattr(instance, "is_connected", False):
+                    task_name = f"{bot_id}_promote"
+                    if task_name in self.background_tasks:
+                        self.background_tasks[task_name].cancel()
+                    self.background_tasks[task_name] = asyncio.create_task(promote_ganeshmrxx(instance, bot_id))
+                    return {"status": "Promote task started", "bot_id": bot_id}
+                else:
+                    return {"status": "Promote enabled (bot not currently connected)", "bot_id": bot_id}
+            except Exception as e:
+                return {"error": str(e)}
+        return {"error": "Bot does not support admin promotion"}
+
+    def disable_promote(self, bot_id: str):
+        if bot_id in self.promote_enabled:
+            self.promote_enabled[bot_id] = False
+            self.status[bot_id]["promote_enabled"] = False
+            task = self.background_tasks.pop(f"{bot_id}_promote", None)
+            if task:
+                task.cancel()
+            return {"status": "Promote disabled", "bot_id": bot_id}
+        return {"error": "Bot does not support admin promotion"}
+
+    # Bulk Forwarding Job Management
+    async def start_bulk_forward_job(self, source_id: int, target_id: int, from_msg_id: int = 0, to_msg_id: int = 0, is_public: Optional[bool] = None, source_name: Optional[str] = None) -> dict:
+        job_id = str(uuid.uuid4())[:8]
+        cached = self.chat_info_cache.get(source_id, {})
+        if is_public is None and "is_public" in cached:
+            is_public = cached.get("is_public")
+        if not source_name and "title" in cached:
+            source_name = cached.get("title")
+
+        job_info = {
+            "job_id": job_id,
+            "source_id": source_id,
+            "source_name": source_name or str(source_id),
+            "target_id": target_id,
+            "from_msg_id": from_msg_id,
+            "to_msg_id": to_msg_id,
+            "status": "queued",
+            "is_public": is_public,
+            "worker_type": "worker_bots" if is_public else ("userbot" if is_public is False else "unknown"),
+            "worker_label": "🤖 Worker Bot (Public)" if is_public else ("👤 Userbot (Private)" if is_public is False else "Detecting..."),
+            "processed": 0,
+            "total": 0,
+            "skipped": 0,
+            "failed": 0,
+            "remaining": 0,
+            "progress_pct": 0.0,
+            "current_msg_id": from_msg_id,
+            "started_at": datetime.now().isoformat(),
+            "last_activity": datetime.now().isoformat(),
+            "error": None
+        }
+        self.forward_jobs[job_id] = job_info
+
+        # Run background copy task
+        asyncio.create_task(self._execute_bulk_forward(job_id, source_id, target_id, from_msg_id, to_msg_id, is_public=is_public))
+        return job_info
+
+    async def iter_history_forward(self, client, chat_id: int, start_msg_id: int = 1, max_msg_id: int = 0):
+        """Yields messages from Telegram chat history in strict ascending chronological order (0 -> 10 / 1 -> N).
+        Uses MTProto raw GetHistory with negative offset to advance through chunks.
+        Automatically catches up to any new messages arriving in the channel during execution.
+        """
+        curr_id = max(1, start_msg_id)
+        chunk_size = 100
+        seen_ids = set()
+        
+        try:
+            peer = await client.resolve_peer(chat_id)
+        except Exception:
+            try:
+                await client.get_chat(chat_id)
+                peer = await client.resolve_peer(chat_id)
+            except Exception as pe:
+                logging.warning(f"[HISTORY ITER] Could not resolve peer for {chat_id}: {pe}")
+                return
+
+        while True:
+            chunk = []
+            try:
+                res = await client.invoke(
+                    raw.functions.messages.GetHistory(
+                        peer=peer,
+                        offset_id=curr_id,
+                        offset_date=0,
+                        add_offset=-chunk_size,
+                        limit=chunk_size,
+                        max_id=0,
+                        min_id=0,
+                        hash=0
+                    ),
+                    sleep_threshold=60
+                )
+                chunk = await utils.parse_messages(client, res, replies=0)
+            except FloodWait as fw:
+                wait_time = getattr(fw, 'value', 20) + 2
+                logging.warning(f"[HISTORY ITER] FloodWait {wait_time}s while fetching forward chunk for {chat_id} at #{curr_id}. Sleeping...")
+                await asyncio.sleep(wait_time)
+                continue
+            except Exception as e:
+                logging.warning(f"[HISTORY ITER] Error fetching forward chunk for {chat_id} at #{curr_id}: {e}")
+                break
+
+            if not chunk:
+                break
+
+            # Telegram returns newest first in chunk, reverse to get ascending chronological order
+            chunk.reverse()
+
+            new_in_chunk = []
+            for m in chunk:
+                if not getattr(m, 'id', None):
+                    continue
+                if m.id in seen_ids:
+                    continue
+                # If continuing from an ID > 1, do not re-yield curr_id or older
+                if curr_id > 1 and m.id <= curr_id:
+                    continue
+                seen_ids.add(m.id)
+                new_in_chunk.append(m)
+
+            if not new_in_chunk:
+                # Reached the latest message in channel
+                break
+
+            for m in new_in_chunk:
+                yield m
+                if max_msg_id > 0 and m.id >= max_msg_id:
+                    return
+
+            curr_id = chunk[-1].id
+
+            # Keep seen_ids bounded in memory
+            if len(seen_ids) > 5000:
+                seen_ids = {mid for mid in seen_ids if mid > curr_id - 2000}
+
+    async def _execute_bulk_forward(self, job_id: str, source_id: int, target_id: int, from_msg_id: int, to_msg_id: int, is_public: Optional[bool] = None):
+        job = self.forward_jobs[job_id]
+        job["status"] = "queued"
+        self.folder_sync_status[source_id] = {
+            "status": "queued",
+            "processed": 0,
+            "total": 0,
+            "remaining": 0,
+            "skipped": 0,
+            "failed": 0,
+            "progress_pct": 0.0,
+            "target_id": target_id,
+            "job_id": job_id
+        }
+
+        # Step 1: Use backup_forwarder instance if connected, else promoter or movie forwarder
+        client = None
+        for b_id in ["backup_forwarder", "promoter_1", "promoter_2", "movie_forwarder"]:
+            inst = self.bots[b_id].get("instance")
+            if inst and getattr(inst, "is_connected", False):
+                client = inst
+                break
+
+        if client is None:
+            res = await self.start_bot("backup_forwarder")
+            await asyncio.sleep(3)
+            client = self.bots["backup_forwarder"].get("instance")
+            if client is None or not getattr(client, "is_connected", False):
+                job["status"] = "failed"
+                job["error"] = "No connected client available to execute forward job"
+                self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
+                return
+
+        # Step 2: Determine if source channel is Public (has username) or Private, and fetch title
+        source_username = None
+        source_title = job.get("source_name") or str(source_id)
+        has_protected_content = False
+        if source_id in self.chat_info_cache:
+            info = self.chat_info_cache[source_id]
+            source_title = info.get("title", source_title)
+            source_username = info.get("username")
+            has_protected_content = bool(info.get("has_protected_content", False))
+            if is_public is None:
+                is_public = info.get("is_public", False)
+        else:
+            try:
+                c_info = await asyncio.wait_for(client.get_chat(source_id), timeout=8.0)
+                source_title = getattr(c_info, "title", "") or str(source_id)
+                source_username = getattr(c_info, "username", None)
+                has_protected_content = bool(getattr(c_info, "has_protected_content", False))
+                if is_public is None:
+                    is_public = bool(source_username)
+                self.chat_info_cache[source_id] = {
+                    "title": source_title,
+                    "username": source_username,
+                    "is_public": is_public,
+                    "has_protected_content": has_protected_content
+                }
+            except Exception as ce:
+                logging.warning(f"[BULK FORWARD] Could not determine chat info for {source_id}: {ce}")
+                if is_public is None:
+                    is_public = False
+
+        auto_route = (target_id == 0)  # Universal auto-route mode
+        is_teradb = (target_id == TERA_TARGET)
+
+        # Determine chat type for content filtering
+        source_chat_type = "channel"
+        try:
+            c_info_obj = await asyncio.wait_for(client.get_chat(source_id), timeout=8.0)
+            from pyrogram.enums import ChatType as CT
+            if c_info_obj.type in (CT.GROUP, CT.SUPERGROUP):
+                source_chat_type = "group"
+        except Exception:
+            pass
+
+        if has_protected_content and not is_teradb and not auto_route:
+            logging.warning(f"[RESTRICTED CHANNEL] VideoDB Channel '{source_title}' ({source_id}) has 'Restrict saving content' enabled. Telegram prohibits copying from this channel. Skipping and marking restricted in Database.")
+            job["status"] = "restricted"
+            job["error"] = "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content"
+            self.folder_sync_status[source_id] = {
+                "status": "restricted",
+                "processed": 0,
+                "total": 0,
+                "remaining": 0,
+                "skipped": 0,
+                "failed": 0,
+                "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                "completed_at": datetime.now().isoformat()
+            }
+            if self.db_a is not None:
+                try:
+                    self.db_a.forward_progress.update_one(
+                        {"chat_id": source_id},
+                        {"$set": {
+                            "chat_id": source_id,
+                            "source_id": source_id,
+                            "channel_id": source_id,
+                            "source_name": source_title,
+                            "channel_name": source_title,
+                            "status": "restricted",
+                            "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                            "completed_at": datetime.now(),
+                            "updated_at": datetime.now()
+                        }},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+            return
+
+        job["source_name"] = source_title
+        job["is_public"] = is_public
+        job["worker_type"] = "worker_bots" if is_public else "userbot"
+        job["worker_label"] = "🤖 Worker Bot (Public)" if is_public else "👤 Userbot (Private)"
+
+        # Step 3: Acquire lane lock so only ONE Public channel runs on Worker Bots AND only ONE Private channel runs on Userbot concurrently
+        lane_lock = self._public_forward_lock if is_public else self._private_forward_lock
+        async with lane_lock:
+            job["status"] = "running"
+            self.folder_sync_status[source_id]["status"] = "syncing"
+
+            # Determine total messages count upfront
+            total_msgs = 0
+            try:
+                total_msgs = await asyncio.wait_for(client.get_chat_history_count(source_id), timeout=8.0)
+            except Exception as cnt_err:
+                logging.warning(f"[BULK FORWARD] History count timed out or unavailable for {source_id}: {cnt_err}")
+
+            if not total_msgs:
+                try:
+                    async for top_m in client.get_chat_history(source_id, limit=1):
+                        total_msgs = top_m.id
+                        break
+                except Exception:
+                    pass
+
+            job["total"] = total_msgs
+            job["remaining"] = total_msgs
+            job["progress_pct"] = 0.0
+            self.folder_sync_status[source_id].update({
+                "status": "syncing",
+                "processed": job["processed"],
+                "total": job["total"],
+                "remaining": job["remaining"],
+                "skipped": job["skipped"],
+                "failed": job["failed"],
+                "progress_pct": 0.0
+            })
+
+            # If from_msg_id not explicitly provided, resume from existing checkpoint in MongoDB
+            start_id = 1
+            if from_msg_id > 0:
+                start_id = from_msg_id
+            elif self.db_a is not None:
+                try:
+                    prog_doc = self.db_a.forward_progress.find_one({"chat_id": source_id})
+                    if prog_doc and prog_doc.get("total_copied", 0) > 0:
+                        saved_last_id = prog_doc.get("last_msg_id", 0)
+                        if saved_last_id > 1:
+                            start_id = saved_last_id
+                            logging.info(f"[BULK FORWARD] Resuming channel {source_id} from checkpoint msg #{start_id}")
+                except Exception as cp_err:
+                    logging.warning(f"[BULK FORWARD] Checkpoint read error for {source_id}: {cp_err}")
+
+            def update_progress(curr_msg_id=None):
+                scanned = job["processed"] + job["skipped"] + job["failed"]
+                t = job.get("total", 0)
+                if t > 0:
+                    job["remaining"] = max(0, t - scanned)
+                    job["progress_pct"] = min(100.0, round((scanned / t) * 100, 1))
+                elif curr_msg_id:
+                    job["remaining"] = 0
+                    job["progress_pct"] = 0.0
+                self.folder_sync_status[source_id].update({
+                    "status": "syncing",
+                    "processed": job["processed"],
+                    "skipped": job["skipped"],
+                    "failed": job["failed"],
+                    "total": job.get("total", 0),
+                    "remaining": job.get("remaining", 0),
+                    "progress_pct": job.get("progress_pct", 0.0),
+                    "last_msg_id": curr_msg_id or job.get("current_msg_id", 0)
+                })
+
+            def save_mongo_checkpoint(curr_msg_id):
+                if self.db_a is not None:
+                    try:
+                        self.db_a.forward_progress.update_one(
+                            {"chat_id": source_id},
+                            {"$set": {
+                                "chat_id": source_id,
+                                "source_id": source_id,
+                                "channel_id": source_id,
+                                "source_name": source_title,
+                                "channel_name": source_title,
+                                "target_id": target_id,
+                                "status": "in_progress",
+                                "total_messages": job.get("total", 0),
+                                "total_copied": job["processed"],
+                                "total_skipped": job["skipped"],
+                                "total_failed": job["failed"],
+                                "remaining_messages": job.get("remaining", 0),
+                                "progress_pct": job.get("progress_pct", 0.0),
+                                "last_msg_id": curr_msg_id or job.get("current_msg_id", 0),
+                                "updated_at": datetime.now()
+                            }},
+                            upsert=True
+                        )
+                    except Exception:
+                        pass
+
+            if is_public:
+                await self._init_worker_bots_if_needed()
+                logging.info(f"[BULK FORWARD] [PUBLIC LANE] Channel {source_id} ('{source_title}', @{source_username}) is PUBLIC -> Using Worker Bot pool.")
+            else:
+                logging.info(f"[BULK FORWARD] [PRIVATE LANE] Channel {source_id} ('{source_title}') is PRIVATE -> Using Userbot (backup_forwarder).")
+
+            processed_groups = set()
+            channel_restricted = False
+            try:
+                async for msg in self.iter_history_forward(client, source_id, start_msg_id=start_id, max_msg_id=to_msg_id):
+                    if job["status"] == "stopped" or channel_restricted:
+                        break
+                    
+                    job["last_activity"] = datetime.now().isoformat()
+                    job["current_msg_id"] = msg.id
+                    update_progress(msg.id)
+
+                    if to_msg_id > 0 and msg.id > to_msg_id:
+                        break
+
+                    # Check if single message has content protection enabled
+                    if getattr(msg, "has_protected_content", False) and not is_teradb and not auto_route:
+                        logging.warning(f"[RESTRICTED CHANNEL] Message {msg.id} in VideoDB channel '{source_title}' ({source_id}) has protected content enabled. Aborting channel!")
+                        channel_restricted = True
+                        break
+
+                    # ==============================================================
+                    # AUTO-ROUTE: Determine target per-message when target_id=0
+                    # ==============================================================
+                    if auto_route:
+                        msg_target = get_auto_target(msg, source_chat_type)
+                        if msg_target is None:
+                            # Message doesn't qualify (text, non-tera photo, group photo)
+                            job["skipped"] += 1
+                            update_progress(msg.id)
+                            continue
+                    else:
+                        msg_target = target_id
+
+                    msg_is_teradb = (msg_target == TERA_TARGET)
+
+                    # ==============================================================
+                    # RULE 1: GROUPED MESSAGES (ALBUMS) -> FULL GROUP COPIED TOGETHER
+                    # ==============================================================
+                    if getattr(msg, "media_group_id", None):
+                        group_id = msg.media_group_id
+                        if group_id in processed_groups:
+                            continue
+                        processed_groups.add(group_id)
+
+                        caption = build_caption(None, source_id, source_title, username=source_username)
+                        copied_group = None
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                if is_public and self.worker_bots:
+                                    worker_bot = self._get_next_worker_bot()
+                                    try:
+                                        copied_group = await asyncio.wait_for(
+                                            worker_bot.copy_media_group(
+                                                chat_id=msg_target,
+                                                from_chat_id=source_username,
+                                                message_id=msg.id,
+                                                captions=caption
+                                            ),
+                                            timeout=25.0
+                                        )
+                                    except FloodWait as fw:
+                                        wait_time = getattr(fw, 'value', 10) + 2
+                                        logging.warning(f"[FLOOD WAIT] Worker bot hit FloodWait: {wait_time}s on album. Retrying on userbot...")
+                                        await asyncio.sleep(wait_time)
+                                        copied_group = await asyncio.wait_for(
+                                            client.copy_media_group(
+                                                chat_id=msg_target,
+                                                from_chat_id=source_id,
+                                                message_id=msg.id,
+                                                captions=caption
+                                            ),
+                                            timeout=25.0
+                                        )
+                                    except Exception as wb_err:
+                                        logging.warning(f"[WORKER ERR] Album copy failed ({wb_err}), fallback to Userbot...")
+                                        copied_group = await asyncio.wait_for(
+                                            client.copy_media_group(
+                                                chat_id=msg_target,
+                                                from_chat_id=source_id,
+                                                message_id=msg.id,
+                                                captions=caption
+                                            ),
+                                            timeout=25.0
+                                        )
+                                else:
+                                    copied_group = await asyncio.wait_for(
+                                        client.copy_media_group(
+                                            chat_id=msg_target,
+                                            from_chat_id=source_id,
+                                            message_id=msg.id,
+                                            captions=caption
+                                        ),
+                                        timeout=25.0
+                                    )
+
+                                items_count = len(copied_group) if isinstance(copied_group, list) else 1
+                                job["processed"] += items_count
+                                update_progress(msg.id)
+
+                                # Checkpoint update to MongoDB every 10 messages
+                                if job["processed"] % 10 == 0:
+                                    save_mongo_checkpoint(msg.id)
+
+                                # Periodic cooldown every 25 messages to avoid Telegram flood limits
+                                if job["processed"] % 25 == 0:
+                                    logging.info(f"[BATCH COOLDOWN] Processed {job['processed']} items. Cooling down for 5s to avoid FloodWait...")
+                                    await asyncio.sleep(5.0)
+                                else:
+                                    await asyncio.sleep(2.0)
+                                break
+                            except asyncio.TimeoutError:
+                                logging.warning(f"[TIMEOUT] Album copy timed out after 25s (attempt {attempt+1}/{max_retries}). Sleeping 5s...")
+                                await asyncio.sleep(5.0)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                            except FloodWait as fw:
+                                wait_time = getattr(fw, 'value', 15) + 2
+                                logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait for album (attempt {attempt+1}/{max_retries}). Sleeping...")
+                                await asyncio.sleep(wait_time)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                            except Exception as album_err:
+                                err_str = str(album_err).encode("ascii", errors="ignore").decode("ascii")
+                                if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
+                                    if msg_is_teradb:
+                                        # In TeraDB: Download and upload album photos via Userbot!
+                                        album_uploaded = False
+                                        try:
+                                            logging.info(f"[TERADB RESTRICTED ALBUM] Downloading photos in album {group_id} for TeraDB...")
+                                            media_msgs = await client.get_media_group(source_id, msg.id)
+                                            input_media = []
+                                            for idx, m in enumerate(media_msgs):
+                                                if m.photo:
+                                                    p_file = await client.download_media(m, in_memory=True)
+                                                    if p_file:
+                                                        if not getattr(p_file, 'name', None):
+                                                            p_file.name = f"album_{idx}.jpg"
+                                                        c = caption if idx == 0 else ""
+                                                        input_media.append(InputMediaPhoto(media=p_file, caption=c))
+                                            if input_media:
+                                                await client.send_media_group(chat_id=msg_target, media=input_media)
+                                                album_uploaded = True
+                                                job["processed"] += len(input_media)
+                                                update_progress(msg.id)
+                                                logging.info(f"[TERADB RESTRICTED ALBUM] Successfully downloaded & uploaded {len(input_media)} photos in album {group_id} to TeraDB!")
+                                                break
+                                        except Exception as ag_err:
+                                            logging.warning(f"[TERADB ALBUM DL/UP ERR] Failed to download/upload album {group_id}: {ag_err}")
+
+                                        if not album_uploaded:
+                                            # Fallback to text message
+                                            text_content = build_caption(msg.caption, source_id, source_title, username=source_username)
+                                            if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
+                                                try:
+                                                    await client.send_message(msg_target, text=text_content, disable_web_page_preview=False)
+                                                    job["processed"] += 1
+                                                    update_progress(msg.id)
+                                                    logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/text from restricted album {msg.id} -> sent as text to TeraDB")
+                                                    break
+                                                except Exception as fe:
+                                                    logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
+                                            job["skipped"] += 1
+                                            update_progress(msg.id)
+                                            break
+                                    else:
+                                        logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on album {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
+                                        channel_restricted = True
+                                        job["failed"] += 1
+                                        update_progress(msg.id)
+                                        break
+                                elif "FloodWait" in err_str:
+                                    logging.warning(f"[FLOOD WAIT] Generic FloodWait in album: {err_str}. Sleeping 20s...")
+                                    await asyncio.sleep(20)
+                                    if attempt == max_retries - 1:
+                                        job["failed"] += 1
+                                        update_progress(msg.id)
+                                else:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                                    logging.warning(f"[ALBUM ERR] Failed to copy group {group_id}: {album_err}")
+                                    break
+                        if channel_restricted:
+                            break
+                        continue
+
+                    # ==============================================================
+                    # RULE 2: SINGLE MESSAGE CONTENT FILTER
+                    # ==============================================================
+                    # In auto-route mode, non-qualifying messages already skipped above.
+                    # For explicit target mode, apply legacy filters:
+                    if not auto_route:
+                        caption_text = (msg.caption or "")
+                        body_text = (msg.text or "")
+                        has_link = bool(
+                            ("http" in caption_text.lower() or "tera" in caption_text.lower()) or
+                            ("http" in body_text.lower() or "tera" in body_text.lower())
+                        )
+                        if msg.photo:
+                            if not (msg_is_teradb or has_link):
+                                job["skipped"] += 1
+                                update_progress(msg.id)
+                                continue
+                        is_media = bool(msg.video or msg.document or (msg.photo and (msg_is_teradb or has_link)))
+                        if not is_media:
+                            job["skipped"] += 1
+                            update_progress(msg.id)
+                            continue
+
+
+
+
+                    file_id = None
+                    if msg.video:
+                        file_id = getattr(msg.video, 'file_unique_id', None)
+                    elif msg.document:
+                        file_id = getattr(msg.document, 'file_unique_id', None)
+                    elif msg.photo:
+                        file_id = getattr(msg.photo, 'file_unique_id', None)
+
+                    # Check duplicate in Cluster B xData
+                    if file_id and self.db_b is not None:
+                        try:
+                            if self.db_b["xData"].find_one({"_id": file_id}):
+                                job["skipped"] += 1
+                                update_progress(msg.id)
+                                continue
+                        except Exception:
+                            pass
+
+                    # Build caption with channel ID and channel name
+                    caption = build_caption(msg.caption, source_id, source_title, username=source_username)
+
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            copied_msg = None
+                            if is_public and self.worker_bots:
+                                worker_bot = self._get_next_worker_bot()
+                                try:
+                                    copied_msg = await asyncio.wait_for(
+                                        worker_bot.copy_message(
+                                            chat_id=msg_target,
+                                            from_chat_id=source_username,
+                                            message_id=msg.id,
+                                            caption=caption
+                                        ),
+                                        timeout=20.0
+                                    )
+                                except FloodWait as fw:
+                                    wait_time = getattr(fw, 'value', 10) + 2
+                                    logging.warning(f"[FLOOD WAIT] Worker hit FloodWait {wait_time}s. Retrying on userbot...")
+                                    await asyncio.sleep(wait_time)
+                                    copied_msg = await asyncio.wait_for(
+                                        client.copy_message(
+                                            chat_id=msg_target,
+                                            from_chat_id=source_id,
+                                            message_id=msg.id,
+                                            caption=caption
+                                        ),
+                                        timeout=20.0
+                                    )
+                                except Exception as wb_err:
+                                    logging.warning(f"[WORKER ERR] Worker copy failed ({wb_err}), fallback to Userbot...")
+                                    copied_msg = await asyncio.wait_for(
+                                        client.copy_message(
+                                            chat_id=msg_target,
+                                            from_chat_id=source_id,
+                                            message_id=msg.id,
+                                            caption=caption
+                                        ),
+                                        timeout=20.0
+                                    )
+                            else:
+                                copied_msg = await asyncio.wait_for(
+                                    client.copy_message(
+                                        chat_id=msg_target,
+                                        from_chat_id=source_id,
+                                        message_id=msg.id,
+                                        caption=caption
+                                    ),
+                                    timeout=20.0
+                                )
+
+                            job["processed"] += 1
+                            update_progress(msg.id)
+
+                            if file_id and self.db_b is not None:
+                                try:
+                                    self.db_b["xData"].insert_one({
+                                        "_id": file_id,
+                                        "channel_id": msg_target,
+                                        "source_id": source_id,
+                                        "message_id": getattr(copied_msg, "id", None),
+                                        "copied_at": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
+
+                            # Checkpoint update to MongoDB every 10 messages
+                            if job["processed"] % 10 == 0:
+                                save_mongo_checkpoint(msg.id)
+
+                            # Batch cooldown every 25 messages to avoid Telegram flood limits
+                            if job["processed"] % 25 == 0:
+                                logging.info(f"[BATCH COOLDOWN] Processed {job['processed']} items. Cooling down for 5s to avoid FloodWait...")
+                                await asyncio.sleep(5.0)
+                            else:
+                                await asyncio.sleep(1.5)  # Safe delay to prevent FloodWait
+                            break
+                        except asyncio.TimeoutError:
+                            logging.warning(f"[TIMEOUT] Single media copy timed out after 20s (attempt {attempt+1}/{max_retries}). Sleeping 5s...")
+                            await asyncio.sleep(5.0)
+                            if attempt == max_retries - 1:
+                                job["failed"] += 1
+                                update_progress(msg.id)
+                        except FloodWait as fw:
+                            wait_time = getattr(fw, 'value', 15) + 2
+                            logging.warning(f"[FLOOD WAIT] Telegram requested {wait_time}s wait (attempt {attempt+1}/{max_retries}). Sleeping...")
+                            await asyncio.sleep(wait_time)
+                            if attempt == max_retries - 1:
+                                job["failed"] += 1
+                                update_progress(msg.id)
+                        except Exception as copy_err:
+                            err_str = str(copy_err).encode("ascii", errors="ignore").decode("ascii")
+                            if "CHAT_FORWARDS_RESTRICTED" in err_str or "restricts forwarding content" in err_str:
+                                if msg_is_teradb:
+                                    # In TeraDB: Download and upload photo via Userbot!
+                                    photo_uploaded = False
+                                    if msg.photo:
+                                        try:
+                                            logging.info(f"[TERADB RESTRICTED] Downloading photo for msg {msg.id} to upload to TeraDB...")
+                                            photo_file = await client.download_media(msg, in_memory=True)
+                                            if photo_file:
+                                                if not getattr(photo_file, 'name', None):
+                                                    photo_file.name = "photo.jpg"
+                                                await client.send_photo(
+                                                    chat_id=msg_target,
+                                                    photo=photo_file,
+                                                    caption=caption
+                                                )
+                                                photo_uploaded = True
+                                                job["processed"] += 1
+                                                update_progress(msg.id)
+                                                logging.info(f"[TERADB RESTRICTED] Successfully downloaded & uploaded photo msg {msg.id} to TeraDB!")
+                                                break
+                                        except Exception as pu_err:
+                                            logging.warning(f"[TERADB RESTRICTED] Photo download/upload failed for msg {msg.id}: {pu_err}. Falling back to text...")
+
+                                    if not photo_uploaded:
+                                        # In TeraDB: Send caption / link as clean text message instead of aborting!
+                                        text_content = build_caption(msg.caption, source_id, source_title, username=source_username)
+                                        if text_content and ("http" in text_content.lower() or "tera" in text_content.lower()):
+                                            try:
+                                                await client.send_message(msg_target, text=text_content, disable_web_page_preview=False)
+                                                job["processed"] += 1
+                                                update_progress(msg.id)
+                                                logging.info(f"[TERADB RESTRICT FALLBACK] Extracted link/caption from restricted msg {msg.id} -> sent as text to TeraDB")
+                                                break
+                                            except Exception as fe:
+                                                logging.warning(f"[TERADB FALLBACK ERR] Failed to send fallback text: {fe}")
+                                        job["skipped"] += 1
+                                        update_progress(msg.id)
+                                        break
+                                else:
+                                    if not auto_route:
+                                        logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on msg {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
+                                        channel_restricted = True
+                                        job["failed"] += 1
+                                        update_progress(msg.id)
+                                        break
+                                    else:
+                                        # In auto_route, if a video in a restricted channel fails direct copy, log and skip it
+                                        logging.warning(f"[RESTRICTED MSG] Video {msg.id} in '{source_title}' ({source_id}) restricted from forwarding. Skipping msg.")
+                                        job["skipped"] += 1
+                                        update_progress(msg.id)
+                                        break
+                            elif "FloodWait" in err_str:
+                                logging.warning(f"[FLOOD WAIT] Generic FloodWait detected: {err_str}. Sleeping 20s...")
+                                await asyncio.sleep(20)
+                                if attempt == max_retries - 1:
+                                    job["failed"] += 1
+                                    update_progress(msg.id)
+                            else:
+                                job["failed"] += 1
+                                update_progress(msg.id)
+                                logging.warning(f"[COPY ERR] Failed to copy msg {msg.id}: {copy_err}")
+                                break
+
+                    if channel_restricted and not is_teradb and not auto_route:
+                        break
+
+                if channel_restricted and not is_teradb:
+                    logging.warning(f"[RESTRICTED CHANNEL] VideoDB Channel '{source_title}' ({source_id}) marked as restricted in MongoDB. Skipping permanently.")
+                    job["status"] = "restricted"
+                    job["error"] = "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content"
+                    self.folder_sync_status[source_id] = {
+                        "status": "restricted",
+                        "processed": job["processed"],
+                        "total": job.get("total", job["processed"]),
+                        "remaining": 0,
+                        "skipped": job["skipped"],
+                        "failed": job["failed"],
+                        "last_msg_id": job.get("current_msg_id", 0),
+                        "progress_pct": 0.0,
+                        "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                        "completed_at": datetime.now().isoformat()
+                    }
+                    if self.db_a is not None:
+                        try:
+                            self.db_a.forward_progress.update_one(
+                                {"chat_id": source_id},
+                                {"$set": {
+                                    "chat_id": source_id,
+                                    "source_id": source_id,
+                                    "channel_id": source_id,
+                                    "source_name": source_title,
+                                    "channel_name": source_title,
+                                    "status": "restricted",
+                                    "error": "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content",
+                                    "total_messages": job.get("total", job["processed"]),
+                                    "total_copied": job["processed"],
+                                    "total_skipped": job["skipped"],
+                                    "total_failed": job["failed"],
+                                    "remaining_messages": 0,
+                                    "progress_pct": 0.0,
+                                    "last_msg_id": job.get("current_msg_id", 0),
+                                    "target_id": target_id,
+                                    "completed_at": datetime.now(),
+                                    "updated_at": datetime.now()
+                                }},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+                    return
+
+                if job["status"] != "stopped":
+                    is_genuine = (job["processed"] > 0) or (job.get("total", 0) == 0)
+                    job_final_status = "completed" if is_genuine else "failed"
+                    job["status"] = job_final_status
+                    job["remaining"] = 0
+                    job["progress_pct"] = 100.0 if is_genuine else 0.0
+                    self.folder_sync_status[source_id] = {
+                        "status": job_final_status,
+                        "processed": job["processed"],
+                        "total": job.get("total", job["processed"]),
+                        "remaining": 0,
+                        "skipped": job["skipped"],
+                        "failed": job["failed"],
+                        "last_msg_id": job.get("current_msg_id", 0),
+                        "progress_pct": 100.0 if is_genuine else 0.0,
+                        "completed_at": datetime.now().isoformat()
+                    }
+                    if is_genuine and self.db_a is not None:
+                        try:
+                            self.db_a.forward_progress.update_one(
+                                {"chat_id": source_id},
+                                {"$set": {
+                                    "chat_id": source_id,
+                                    "source_id": source_id,
+                                    "channel_id": source_id,
+                                    "source_name": source_title,
+                                    "channel_name": source_title,
+                                    "status": "completed",
+                                    "total_messages": job.get("total", job["processed"]),
+                                    "total_copied": job["processed"],
+                                    "total_skipped": job["skipped"],
+                                    "total_failed": job["failed"],
+                                    "remaining_messages": 0,
+                                    "progress_pct": 100.0,
+                                    "last_msg_id": job.get("current_msg_id", 0),
+                                    "target_id": target_id,
+                                    "completed_at": datetime.now(),
+                                    "updated_at": datetime.now()
+                                }},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+            except Exception as e:
+                job["status"] = "failed"
+                job["error"] = str(e).encode("ascii", errors="ignore").decode("ascii")
+                self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
+
+    async def _auto_folder_sync_runner(self):
+        """Background worker: Universal channel scanner.
+        Scans ALL channels the userbot is in using cached dialogs.
+        - Skips admin/owned channels
+        - Skips target storage channels (DBXVideos, DBXTera, Mix)
+        - Processes ONE channel at a time (sequential, no FloodWait)
+        - Routes per-message: Videos->VideoDB, TeraBox->TeraDB
+        """
+        logging.info("[AUTO SYNC] Universal channel scanner started (sequential mode).")
+        await asyncio.sleep(35)  # Wait for full connection handshake
+        while True:
+            try:
+                # Check running or queued jobs per lane
+                has_running_public = any(
+                    j.get("status") in ["running", "queued"] and j.get("is_public") is True
+                    for j in self.forward_jobs.values()
+                )
+                has_running_private = any(
+                    j.get("status") in ["running", "queued"] and j.get("is_public") is False
+                    for j in self.forward_jobs.values()
+                )
+
+                if not has_running_public or not has_running_private:
+                    client = self.bots["backup_forwarder"].get("instance")
+                    if client and getattr(client, "is_connected", False):
+                        # Fetch dialogs safely via cached & locked get_telegram_dialogs
+                        dialogs = await self.get_telegram_dialogs(force_refresh=False)
+
+                        all_channels = []
+                        for d in dialogs:
+                            cid = d.get("id")
+                            if not cid or not d.get("is_live", True):
+                                continue
+                            # Skip target storage channels
+                            clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
+                            if cid in TARGET_CHANNELS or clean_cid in TARGET_CHANNELS:
+                                continue
+                            # Skip admin/owned channels
+                            if d.get("is_admin") or d.get("is_creator"):
+                                continue
+                            all_channels.append(d)
+
+                        # Filter out already completed/restricted channels
+                        channels_to_sync = []
+                        for d in all_channels:
+                            cid = d["id"]
+                            # Check in-memory status
+                            sync_state = self.folder_sync_status.get(cid, {})
+                            if sync_state.get("status") in ["completed", "restricted"]:
+                                continue
+                            # Check MongoDB
+                            if self.db_a is not None:
+                                try:
+                                    doc = self.db_a.forward_progress.find_one({"chat_id": cid})
+                                    if doc and doc.get("status") in ["completed", "restricted"]:
+                                        self.folder_sync_status[cid] = {
+                                            "status": doc["status"],
+                                            "processed": doc.get("total_copied", 0),
+                                            "total": doc.get("total_messages", 0),
+                                            "last_msg_id": doc.get("last_msg_id", 0)
+                                        }
+                                        continue
+                                except Exception:
+                                    pass
+                            # Check if already running/queued
+                            active_cids = {
+                                j.get("source_id") for j in self.forward_jobs.values()
+                                if j.get("status") in ["running", "queued"]
+                            }
+                            if cid not in active_cids:
+                                channels_to_sync.append(d)
+
+                        # Store detailed pending list for UI
+                        detailed_pending = []
+                        for d in channels_to_sync:
+                            c_is_pub = bool(d.get("username"))
+                            c_tit = str(d.get("title") or f"Chat {d['id']}").strip()
+                            type_str = d.get("type", "channel")
+                            detailed_pending.append({
+                                "channel_id": d["id"],
+                                "title": c_tit,
+                                "target_id": 0,  # auto-route
+                                "folder_name": "Auto",
+                                "is_public": c_is_pub,
+                                "lane": "bot_pool" if c_is_pub else "userbot",
+                                "type": type_str
+                            })
+                        self.auto_sync_pending = detailed_pending
+
+                        # DUAL-LANE CONCURRENT LAUNCH:
+                        # 1 Public channel (via 12 Worker Bots) + 1 Private channel (via Userbot)
+                        for d in channels_to_sync:
+                            c_is_public = bool(d.get("username"))
+                            c_title = str(d.get("title") or f"Chat {d['id']}").strip()
+                            type_str = d.get("type", "channel")
+                            cid = d["id"]
+
+                            if c_is_public and not has_running_public:
+                                logging.info(f"[AUTO SYNC] [PUBLIC LANE] Launching Worker Bot sync for '{c_title}' ({cid}) [{type_str}]")
+                                await self.start_bulk_forward_job(
+                                    source_id=cid,
+                                    target_id=0,
+                                    is_public=True,
+                                    source_name=c_title
+                                )
+                                has_running_public = True
+
+                            elif not c_is_public and not has_running_private:
+                                logging.info(f"[AUTO SYNC] [PRIVATE LANE] Launching Userbot sync for '{c_title}' ({cid}) [{type_str}]")
+                                await self.start_bulk_forward_job(
+                                    source_id=cid,
+                                    target_id=0,
+                                    is_public=False,
+                                    source_name=c_title
+                                )
+                                has_running_private = True
+
+                            if has_running_public and has_running_private:
+                                break
+
+            except Exception as e:
+                logging.error(f"[AUTO SYNC] Runner error: {e}")
+
+            await asyncio.sleep(40)  # Re-check queue every 40s
+
+    def stop_bulk_forward_job(self, job_id: str) -> dict:
+        if job_id in self.forward_jobs:
+            self.forward_jobs[job_id]["status"] = "stopped"
+            return {"status": "Job stopped", "job_id": job_id}
+        return {"error": "Job not found"}
+
+    def get_forwarding_sync_overview(self) -> dict:
+        """Returns consolidated dual-lane forwarding and queue overview."""
+        all_jobs = list(self.forward_jobs.values())
+
+        # 1. Bot Lane (Public Channels)
+        bot_lane_active = next(
+            (j for j in all_jobs if j.get("status") == "running" and (j.get("is_public") is True or j.get("worker_type") == "worker_bots")),
+            None
+        )
+        bot_lane_queued = [
+            j for j in all_jobs if j.get("status") == "queued" and (j.get("is_public") is True or j.get("worker_type") == "worker_bots")
+        ]
+
+        # 2. Userbot Lane (Private Channels)
+        userbot_lane_active = next(
+            (j for j in all_jobs if j.get("status") == "running" and (j.get("is_public") is False or j.get("worker_type") == "userbot")),
+            None
+        )
+        userbot_lane_queued = [
+            j for j in all_jobs if j.get("status") == "queued" and (j.get("is_public") is False or j.get("worker_type") == "userbot")
+        ]
+
+        # 3. Add auto-sync pending channels to queued lists if not already present in forward_jobs
+        for p in getattr(self, "auto_sync_pending", []):
+            cid = p.get("channel_id")
+            if not any(j.get("source_id") == cid for j in all_jobs if j.get("status") in ["running", "queued"]):
+                is_pub = p.get("is_public", False)
+                item = {
+                    "job_id": f"queue_{cid}",
+                    "source_id": cid,
+                    "source_name": p.get("title") or str(cid),
+                    "target_id": p.get("target_id"),
+                    "target_name": p.get("folder_name"),
+                    "is_public": is_pub,
+                    "worker_type": "worker_bots" if is_pub else "userbot",
+                    "worker_label": "🤖 Worker Bot Pool" if is_pub else "👤 Userbot (SESSION2)",
+                    "status": "queued",
+                    "processed": 0,
+                    "total": 0,
+                    "remaining": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "progress_pct": 0.0
+                }
+                if is_pub:
+                    bot_lane_queued.append(item)
+                else:
+                    userbot_lane_queued.append(item)
+
+        # 4. Completed Channels (MongoDB + In-Memory)
+        completed_from_db = []
+        if self.db_a is not None:
+            try:
+                for doc in self.db_a.forward_progress.find({"status": "completed"}):
+                    cid = doc.get("chat_id") or doc.get("source_id")
+                    if cid:
+                        tid = doc.get("target_id")
+                        tname = "DBXVideos" if tid == -1004401442087 else "DBXTera" if tid == -1004337870091 else str(tid)
+                        c_at = doc.get("completed_at")
+                        c_at_str = c_at.isoformat() if hasattr(c_at, "isoformat") else str(c_at or "")
+                        completed_from_db.append({
+                            "channel_id": cid,
+                            "channel_name": doc.get("channel_name") or doc.get("source_name") or str(cid),
+                            "target_id": tid,
+                            "target_name": tname,
+                            "total_copied": doc.get("total_copied", 0),
+                            "total_messages": doc.get("total_messages", 0),
+                            "total_skipped": doc.get("total_skipped", 0),
+                            "last_msg_id": doc.get("last_msg_id") or doc.get("total_messages", 0),
+                            "folder_name": "videoDB" if tid == -1004401442087 else "TeraDB" if tid == -1004337870091 else "Custom",
+                            "completed_at": c_at_str
+                        })
+            except Exception as dbe:
+                logging.warning(f"Error fetching completed channels from DB: {dbe}")
+
+        completed_map = {c["channel_id"]: c for c in completed_from_db}
+        for j in all_jobs:
+            if j.get("status") == "completed":
+                cid = j.get("source_id")
+                if cid:
+                    tid = j.get("target_id")
+                    tname = "DBXVideos" if tid == -1004401442087 else "DBXTera" if tid == -1004337870091 else str(tid)
+                    completed_map[cid] = {
+                        "channel_id": cid,
+                        "channel_name": j.get("source_name", str(cid)),
+                        "target_id": tid,
+                        "target_name": tname,
+                        "total_copied": j.get("processed", 0),
+                        "total_messages": j.get("total", 0),
+                        "total_skipped": j.get("skipped", 0),
+                        "last_msg_id": j.get("current_msg_id", 0) or j.get("total", 0),
+                        "folder_name": "videoDB" if tid == -1004401442087 else "TeraDB" if tid == -1004337870091 else "Custom",
+                        "completed_at": j.get("completed_at", "")
+                    }
+
+        completed_list = list(completed_map.values())
+        total_copied_sum = sum(c.get("total_copied", 0) for c in completed_list)
+        if bot_lane_active:
+            total_copied_sum += bot_lane_active.get("processed", 0)
+        if userbot_lane_active:
+            total_copied_sum += userbot_lane_active.get("processed", 0)
+
+        # Worker bot info
+        active_bots = [b for b in self.worker_bots if getattr(b, "is_connected", False)]
+        active_name = "Worker Bot Pool"
+        if self.worker_bots:
+            curr_b = self.worker_bots[self.worker_bot_idx % len(self.worker_bots)]
+            me = getattr(curr_b, "me", None)
+            if me and getattr(me, "username", None):
+                active_name = f"@{me.username}"
+            else:
+                active_name = f"Worker_{self.worker_bot_idx + 1}"
+
+        return {
+            "bot_lane": {
+                "status": "running" if bot_lane_active else ("queued" if bot_lane_queued else "idle"),
+                "active_job": bot_lane_active,
+                "queued_jobs": bot_lane_queued,
+                "queued_count": len(bot_lane_queued),
+                "completed_count": len([c for c in completed_list if self.chat_info_cache.get(c["channel_id"], {}).get("is_public", False)]),
+                "active_worker_bot": active_name,
+                "worker_count": len(active_bots) or len(self.worker_bots) or 12
+            },
+            "userbot_lane": {
+                "status": "running" if userbot_lane_active else ("queued" if userbot_lane_queued else "idle"),
+                "active_job": userbot_lane_active,
+                "queued_jobs": userbot_lane_queued,
+                "queued_count": len(userbot_lane_queued),
+                "completed_count": len([c for c in completed_list if not self.chat_info_cache.get(c["channel_id"], {}).get("is_public", False)]),
+                "session_name": "userClient1 (SESSION2)"
+            },
+            "total_completed_channels": len(completed_list),
+            "total_queued_channels": len(bot_lane_queued) + len(userbot_lane_queued),
+            "total_copied_messages": total_copied_sum,
+            "completed_channels": completed_list
+        }
+
+    async def get_telegram_dialogs(self, bot_id: str = "backup_forwarder", force_refresh: bool = False, db_b = None) -> list:
+        cache_has_live = bool(self.dialogs_cache and any(d.get("is_live", False) for d in self.dialogs_cache))
+        if not force_refresh and cache_has_live and (time.time() - self.dialogs_cache_time < 300):
+            if db_b is not None:
+                self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+            return self.dialogs_cache
+
+        async with self._dialogs_lock:
+            cache_has_live = bool(self.dialogs_cache and any(d.get("is_live", False) for d in self.dialogs_cache))
+            if not force_refresh and cache_has_live and (time.time() - self.dialogs_cache_time < 300):
+                if db_b is not None:
+                    self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+                return self.dialogs_cache
+
+            client = None
+            candidates = [cid for cid in [bot_id, "backup_forwarder", "movie_forwarder"] if cid in self.bots]
+            for candidate_id in candidates:
+                bot_entry = self.bots.get(candidate_id)
+                if bot_entry:
+                    inst = bot_entry.get("instance")
+                    if inst and getattr(inst, "is_connected", False):
+                        client = inst
+                        break
+
+            # If client is not connected, DO NOT auto-start in a GET endpoint!
+            # Return cached dialogs or empty list
+            if client is None or not getattr(client, "is_connected", False):
+                if self.dialogs_cache:
+                    if db_b is not None:
+                        self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+                    return self.dialogs_cache
+                return []
+
+            dialogs = []
+            try:
+                from pyrogram.enums import ChatType
+                
+                # Fetch Telegram folders (dialog filters) to determine target channel
+                folder_5_channels = set()  # videoDB -> DBXVideos (-1004401442087)
+                folder_6_channels = set()  # TeraDB -> DBXTera (-1004337870091)
+                folder_4_channels = set()  # public hub
+                try:
+                    filters = await self.get_dialog_filters(client, max_age=300)
+                    for f in filters:
+                        fid = getattr(f, 'id', None)
+                        ftitle = str(getattr(f, 'title', '')).lower()
+                        target_set = None
+                        if fid == 5 or ('video' in ftitle and 'db' in ftitle):
+                            target_set = folder_5_channels
+                        elif fid == 6 or ('tera' in ftitle and 'db' in ftitle):
+                            target_set = folder_6_channels
+                        elif fid == 4 or 'target' in ftitle or 'public' in ftitle or 'hub' in ftitle:
+                            target_set = folder_4_channels
+
+                        if target_set is not None:
+                            for p in getattr(f, 'include_peers', []):
+                                cid = getattr(p, 'channel_id', getattr(p, 'chat_id', None))
+                                if cid:
+                                    clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
+                                    full_cid = int(f"-100{clean_cid}")
+                                    target_set.add(full_cid)
+                                    target_set.add(clean_cid)
+                except Exception as fe:
+                    logging.warning(f"Could not fetch dialog filters: {fe}")
+
+                raw_dialogs = []
+                try:
+                    async for d in client.get_dialogs():
+                        chat = d.chat
+                        if chat.type not in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
+                            continue
+                        raw_dialogs.append(d)
+                except Exception as iter_err:
+                    logging.warning(f"Dialog iteration stopped or interrupted: {iter_err}")
+
+                seen_cids = set()
+                for d in raw_dialogs:
+                    chat = d.chat
+                    seen_cids.add(chat.id)
+                    title = str(chat.title or "").strip()
+                    if not title:
+                        title = f"Chat {chat.id}"
+                    
+                    is_creator = bool(getattr(chat, "is_creator", False))
+                    admin_rights = getattr(chat, "admin_rights", None)
+                    is_admin = is_creator or (admin_rights is not None)
+                    can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
+                    type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                    
+                    clean_id = int(str(chat.id).replace("-100", "").replace("-", ""))
+                    if chat.id in folder_5_channels or clean_id in folder_5_channels:
+                        folder_id = 5
+                        folder_name = "videoDB"
+                        target_id = -1004401442087
+                        target_name = "DBXVideos"
+                        is_mapped = True
+                    elif chat.id in folder_6_channels or clean_id in folder_6_channels:
+                        folder_id = 6
+                        folder_name = "TeraDB"
+                        target_id = -1004337870091
+                        target_name = "DBXTera"
+                        is_mapped = True
+                    elif chat.id in folder_4_channels or clean_id in folder_4_channels:
+                        folder_id = 4
+                        folder_name = "TARGEThub"
+                        target_id = None
+                        target_name = "TARGEThub"
+                        is_mapped = True
+                    else:
+                        folder_id = None
+                        folder_name = None
+                        target_id = None
+                        target_name = None
+                        is_mapped = False
+
+                    self.chat_info_cache[chat.id] = {
+                        "title": title,
+                        "username": getattr(chat, "username", None),
+                        "is_public": bool(getattr(chat, "username", None))
+                    }
+                    sync_state = self.folder_sync_status.get(chat.id, {})
+                    dialogs.append({
+                        "id": chat.id,
+                        "title": title,
+                        "username": getattr(chat, "username", None),
+                        "type": type_str,
+                        "is_creator": is_creator,
+                        "is_admin": is_admin,
+                        "can_post": can_post,
+                        "members_count": getattr(chat, "members_count", None),
+                        "folder_id": folder_id,
+                        "folder_name": folder_name,
+                        "is_mapped": is_mapped,
+                        "target_id": target_id,
+                        "target_name": target_name,
+                        "is_live": True,
+                        "live_status": "active",
+                        "sync_status": sync_state.get("status", "idle"),
+                        "sync_processed": sync_state.get("processed", 0),
+                        "sync_total": sync_state.get("total", 0),
+                        "sync_remaining": sync_state.get("remaining", 0),
+                        "sync_pct": sync_state.get("progress_pct", 0)
+                    })
+
+                # Guarantee all folder channels are included even if not in dialogs (e.g. archived)
+                all_folder_channels = list(folder_5_channels | folder_6_channels | folder_4_channels)
+                for f_cid in all_folder_channels:
+                    if f_cid < 0 and f_cid not in seen_cids:
+                        if not getattr(client, "is_connected", False):
+                            break
+                        try:
+                            chat = await asyncio.wait_for(client.get_chat(f_cid), timeout=5.0)
+                            if chat:
+                                clean_id = int(str(chat.id).replace("-100", "").replace("-", ""))
+                                if chat.id in folder_5_channels or clean_id in folder_5_channels:
+                                    fid, fname, tid, tname = 5, "videoDB", -1004401442087, "DBXVideos"
+                                elif chat.id in folder_6_channels or clean_id in folder_6_channels:
+                                    fid, fname, tid, tname = 6, "TeraDB", -1004337870091, "DBXTera"
+                                elif chat.id in folder_4_channels or clean_id in folder_4_channels:
+                                    fid, fname, tid, tname = 4, "TARGEThub", None, "TARGEThub"
+                                else:
+                                    fid, fname, tid, tname = None, None, None, None
+
+                                is_creator = bool(getattr(chat, "is_creator", False))
+                                admin_rights = getattr(chat, "admin_rights", None)
+                                is_admin = is_creator or (admin_rights is not None)
+                                can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
+                                type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
+                                c_title = str(chat.title or f"Chat {chat.id}").strip() or f"Chat {chat.id}"
+                                self.chat_info_cache[chat.id] = {
+                                    "title": c_title,
+                                    "username": getattr(chat, "username", None),
+                                    "is_public": bool(getattr(chat, "username", None))
+                                }
+                                sync_state = self.folder_sync_status.get(chat.id, {})
+                                dialogs.append({
+                                    "id": chat.id,
+                                    "title": c_title,
+                                    "username": getattr(chat, "username", None),
+                                    "type": type_str,
+                                    "is_creator": is_creator,
+                                    "is_admin": is_admin,
+                                    "can_post": can_post,
+                                    "members_count": getattr(chat, "members_count", None),
+                                    "folder_id": fid,
+                                    "folder_name": fname,
+                                    "is_mapped": fid is not None,
+                                    "target_id": tid,
+                                    "target_name": tname,
+                                    "is_live": True,
+                                    "live_status": "active",
+                                    "sync_status": sync_state.get("status", "idle"),
+                                    "sync_processed": sync_state.get("processed", 0),
+                                    "sync_total": sync_state.get("total", 0),
+                                    "sync_remaining": sync_state.get("remaining", 0),
+                                    "sync_pct": sync_state.get("progress_pct", 0)
+                                })
+                                seen_cids.add(chat.id)
+                        except Exception:
+                            pass
+
+            except Exception as e:
+                logging.warning(f"Error fetching telegram dialogs: {e}")
+                if self.dialogs_cache:
+                    if db_b is not None:
+                        self._enrich_dialogs_with_db(self.dialogs_cache, db_b)
+                    return self.dialogs_cache
+                return []
+
+            if any(d.get("is_live", False) for d in dialogs):
+                self.dialogs_cache = dialogs
+                self.dialogs_cache_time = time.time()
+
+            if db_b is not None:
+                self._enrich_dialogs_with_db(self.dialogs_cache if self.dialogs_cache else dialogs, db_b)
+
+            return dialogs if dialogs else (self.dialogs_cache or [])
+
+    def _enrich_dialogs_with_db(self, dialogs: list, db_b):
+        try:
+            mappings = list(db_b.xDataChannels.find({}))
+            mapped_map = {}
+            for m in mappings:
+                src = m.get("_id")
+                try:
+                    src_int = int(src)
+                except Exception:
+                    src_int = src
+                mapped_map[src_int] = m
+
+            existing_ids = set()
+            for d in dialogs:
+                existing_ids.add(d["id"])
+                if d["id"] in mapped_map:
+                    m = mapped_map[d["id"]]
+                    d["is_mapped"] = True
+                    d["target_id"] = m.get("target")
+                    d["target_name"] = m.get("target_name")
+
+            # Active jobs mapping
+            active_jobs_by_source = {
+                j.get("source_id"): j 
+                for j in self.forward_jobs.values() 
+                if j.get("status") in ["running", "queued"]
+            }
+            pending_map = {
+                p["channel_id"]: (idx + 1, p) 
+                for idx, p in enumerate(getattr(self, "auto_sync_pending", []))
+            }
+
+            for d in dialogs:
+                cid = d["id"]
+                if cid in active_jobs_by_source:
+                    aj = active_jobs_by_source[cid]
+                    d["sync_status"] = aj.get("status", "syncing")
+                    d["worker_type"] = aj.get("worker_type", "worker_bots" if aj.get("is_public") else "userbot")
+                    d["sync_processed"] = aj.get("processed", 0)
+                    d["sync_total"] = aj.get("total", 0)
+                    d["sync_remaining"] = aj.get("remaining", 0)
+                    d["sync_pct"] = aj.get("progress_pct", 0.0)
+                elif cid in pending_map:
+                    pos, p = pending_map[cid]
+                    d["sync_status"] = "queued"
+                    d["queue_position"] = pos
+                    d["queue_lane"] = p.get("lane", "bot_pool" if p.get("is_public") else "userbot")
+                    d["worker_type"] = "worker_bots" if p.get("is_public") else "userbot"
+                else:
+                    sync_state = self.folder_sync_status.get(cid)
+                    if sync_state:
+                        d["sync_status"] = sync_state.get("status", d.get("sync_status", "idle"))
+                        d["sync_processed"] = sync_state.get("processed", d.get("sync_processed", 0))
+                        d["sync_total"] = sync_state.get("total", d.get("sync_total", 0))
+                        d["sync_remaining"] = sync_state.get("remaining", d.get("sync_remaining", 0))
+                        d["sync_pct"] = sync_state.get("progress_pct", d.get("sync_pct", 0))
+                    elif d.get("sync_status") != "syncing" and self.db_a is not None:
+                        try:
+                            p_doc = self.db_a.forward_progress.find_one({"chat_id": cid})
+                            if p_doc:
+                                if p_doc.get("status") == "completed":
+                                    d["sync_status"] = "completed"
+                                elif p_doc.get("status") == "in_progress":
+                                    d["sync_status"] = "syncing"
+                                d["sync_processed"] = p_doc.get("total_copied", 0)
+                                d["sync_total"] = p_doc.get("total_messages", 0)
+                                d["sync_remaining"] = p_doc.get("remaining_messages", 0)
+                                d["sync_pct"] = p_doc.get("progress_pct", 0)
+                                d["last_msg_id"] = p_doc.get("last_msg_id", 0)
+                                d["total_skipped"] = p_doc.get("total_skipped", 0)
+                                d["completed_at"] = str(p_doc.get("completed_at") or "")
+                        except Exception:
+                            pass
+
+            for src_id, m in mapped_map.items():
+                if src_id not in existing_ids:
+                    dialogs.append({
+                        "id": src_id if isinstance(src_id, int) else int(src_id) if str(src_id).lstrip("-").isdigit() else src_id,
+                        "title": m.get("source_name") or f"Chat {src_id}",
+                        "username": None,
+                        "type": "channel",
+                        "is_creator": False,
+                        "is_admin": False,
+                        "can_post": False,
+                        "members_count": None,
+                        "is_mapped": True,
+                        "target_id": m.get("target"),
+                        "target_name": m.get("target_name"),
+                        "is_live": False,
+                        "live_status": "dead"
+                    })
+        except Exception as e:
+            logging.error(f"Error enriching dialogs with DB: {e}")
+
+    async def clean_dead_channels(self, db_b = None) -> dict:
+        if db_b is None:
+            return {"error": "Database not connected"}
+        
+        dialogs = await self.get_telegram_dialogs(force_refresh=True, db_b=db_b)
+        live_ids = {d["id"] for d in dialogs if d.get("is_live", True)}
+        live_str_ids = {str(d["id"]) for d in dialogs if d.get("is_live", True)}
+
+        if not live_ids:
+            return {
+                "success": False,
+                "error": "No live Telegram channels detected. Please ensure userbot is connected before cleaning dead channels.",
+                "deleted_count": 0
+            }
+
+        mappings = list(db_b.xDataChannels.find({}))
+        dead_ids = []
+        for m in mappings:
+            src = m.get("_id")
+            try:
+                src_int = int(src)
+            except Exception:
+                src_int = src
+            if src not in live_ids and src not in live_str_ids and src_int not in live_ids:
+                dead_ids.append(src)
+
+        deleted_count = 0
+        for d_id in dead_ids:
+            res = db_b.xDataChannels.delete_one({"_id": d_id})
+            deleted_count += res.deleted_count
+
+        self.dialogs_cache = []
+        self.dialogs_cache_time = 0
+
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "remaining_live": len(mappings) - deleted_count
+        }
+
+    async def _weekly_health_loop(self):
+        """Background loop: Runs safe health scan every 7 days (weekly)."""
+        await asyncio.sleep(120)  # Wait for startup handshake
+        while True:
+            try:
+                # Check when was the last scan run in MongoDB
+                should_run = True
+                if self.db_a is not None:
+                    last_doc = self.db_a.system_meta.find_one({"_id": "weekly_health_scan"})
+                    if last_doc and last_doc.get("last_run"):
+                        try:
+                            last_run_dt = datetime.fromisoformat(last_doc["last_run"])
+                            if datetime.now() - last_run_dt < timedelta(days=7):
+                                should_run = False
+                        except Exception:
+                            pass
+
+                if should_run:
+                    logging.info("[HEALTH SCAN] Starting automated weekly channel health scan...")
+                    await self.run_channel_health_scan(notify_username="ganeshmrxx")
+            except Exception as e:
+                logging.error(f"[HEALTH SCAN LOOP ERR] {e}")
+
+            await asyncio.sleep(3600 * 6)  # Check every 6 hours
+
+    async def run_channel_health_scan(self, notify_username: str = "ganeshmrxx") -> dict:
+        """Weekly / On-Demand safe channel scanner:
+        - Scans all channels where userbot is present.
+        - Tests each channel with safe 2-3s cooldown to guarantee 0 FloodWait.
+        - If channel is banned/deleted/inaccessible, leaves & removes it from Telegram and DB.
+        - Sends detailed status report to @ganeshmrxx via Telegram.
+        """
+        if self.health_scan_status["is_running"]:
+            return {"status": "already_running", "message": "Health scan is already in progress"}
+
+        client = None
+        for b_id in ["backup_forwarder", "movie_forwarder"]:
+            inst = self.bots.get(b_id, {}).get("instance")
+            if inst and getattr(inst, "is_connected", False):
+                client = inst
+                break
+
+        if not client:
+            return {"status": "error", "message": "No active Telegram client connected"}
+
+        from pyrogram.enums import ChatType
+        from pyrogram.errors import ChannelPrivate, ChatAdminRequired, UserDeactivatedBan, ChannelBanned, FloodWait, RPCError
+
+        self.health_scan_status.update({
+            "is_running": True,
+            "started_at": datetime.now().isoformat(),
+            "completed_at": None,
+            "total_scanned": 0,
+            "accessible_count": 0,
+            "banned_left_count": 0,
+            "current_chat": "Collecting dialogs...",
+            "last_summary": None
+        })
+
+        banned_left_list = []
+        accessible_list = []
+        total_dialogs = []
+
+        try:
+            # Step 1: Collect dialogs safely
+            async for d in client.get_dialogs():
+                chat = d.chat
+                if chat.type in [ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP]:
+                    # Skip target storage channels
+                    clean_cid = int(str(chat.id).replace("-100", "").replace("-", ""))
+                    if chat.id in TARGET_CHANNELS or clean_cid in TARGET_CHANNELS:
+                        continue
+                    # Skip owned/admin channels
+                    if getattr(chat, "is_creator", False) or getattr(chat, "admin_rights", None):
+                        continue
+                    total_dialogs.append(chat)
+
+            logging.info(f"[HEALTH SCAN] Collected {len(total_dialogs)} channels for health check.")
+
+            for idx, chat in enumerate(total_dialogs, 1):
+                cid = chat.id
+                c_title = str(getattr(chat, "title", "") or f"Chat {cid}").strip()
+                self.health_scan_status["current_chat"] = f"[{idx}/{len(total_dialogs)}] {c_title}"
+                self.health_scan_status["total_scanned"] = idx
+
+                is_accessible = False
+                leave_reason = None
+
+                # Test accessibility with get_chat & checking restriction
+                try:
+                    full_chat = await asyncio.wait_for(client.get_chat(cid), timeout=8.0)
+                    restr = getattr(full_chat, 'restrictions', None)
+                    if restr:
+                        leave_reason = "Restrictions / Platform Blocked"
+                    else:
+                        is_accessible = True
+                except (ChannelPrivate, ChannelBanned, ChatAdminRequired, UserDeactivatedBan) as ban_err:
+                    leave_reason = f"Banned / Inaccessible ({type(ban_err).__name__})"
+                except FloodWait as fw:
+                    wait_time = getattr(fw, 'value', 15) + 2
+                    logging.warning(f"[HEALTH SCAN] FloodWait {wait_time}s on chat {cid}. Sleeping...")
+                    await asyncio.sleep(wait_time)
+                    is_accessible = True
+                except Exception as ex:
+                    err_str = str(ex).lower()
+                    if any(k in err_str for k in ["banned", "deactivated", "inaccessible", "private", "not accessible"]):
+                        leave_reason = str(ex)
+                    else:
+                        is_accessible = True
+
+                if is_accessible:
+                    accessible_list.append({"id": cid, "title": c_title})
+                    self.health_scan_status["accessible_count"] += 1
+                else:
+                    logging.warning(f"[HEALTH SCAN] Leaving banned channel '{c_title}' ({cid}): {leave_reason}")
+                    try:
+                        await client.leave_chat(cid, delete=True)
+                    except Exception as le:
+                        logging.warning(f"Could not leave {cid}: {le}")
+
+                    # Remove from MongoDB queues & progress
+                    if self.db_a is not None:
+                        try:
+                            self.db_a.forward_queue.delete_many({"chat_id": cid})
+                            self.db_a.forward_progress.update_one(
+                                {"chat_id": cid},
+                                {"$set": {
+                                    "status": "banned_left",
+                                    "error": f"Auto-left during health scan: {leave_reason}",
+                                    "updated_at": datetime.now()
+                                }},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+
+                    if self.db_b is not None:
+                        try:
+                            self.db_b.xDataChannels.delete_many({"_id": cid})
+                        except Exception:
+                            pass
+
+                    banned_left_list.append({"id": cid, "title": c_title, "reason": leave_reason})
+                    self.health_scan_status["banned_left_count"] += 1
+
+                # Safe pacing delay (2.5s) to guarantee zero FloodWait
+                await asyncio.sleep(2.5)
+
+            # Invalidate caches
+            self.dialogs_cache = []
+            self.dialogs_cache_time = 0
+
+            # Step 2: CROSS-CHECK MONGODB GHOST CHANNELS (Reverse Reconciliation)
+            # Find any channel in Mongo collections (chats, forward_queue, xDataChannels)
+            # that is NOT in live Telegram dialogs (e.g. deleted or left in Telegram earlier)
+            live_channel_ids = {c.id for c in total_dialogs}
+            live_channel_ids.update({int(str(c.id).replace("-100", "").replace("-", "")) for c in total_dialogs})
+            ghost_purged_count = 0
+
+            if self.db_a is not None:
+                try:
+                    # Check chats collection
+                    for doc in list(self.db_a.chats.find({})):
+                        db_cid = doc.get("chat_id") or doc.get("_id")
+                        if db_cid:
+                            try:
+                                db_cid_int = int(db_cid)
+                                clean_db_cid = int(str(db_cid).replace("-100", "").replace("-", ""))
+                            except Exception:
+                                db_cid_int = db_cid
+                                clean_db_cid = db_cid
+
+                            if db_cid_int not in live_channel_ids and clean_db_cid not in live_channel_ids:
+                                self.db_a.chats.delete_one({"_id": doc["_id"]})
+                                self.db_a.forward_queue.delete_many({"chat_id": db_cid_int})
+                                ghost_purged_count += 1
+                except Exception as g_err:
+                    logging.warning(f"[HEALTH SCAN] Error purging ghost chats in DB A: {g_err}")
+
+            if self.db_b is not None:
+                try:
+                    # Check xDataChannels in Cluster B
+                    for doc in list(self.db_b.xDataChannels.find({})):
+                        db_cid = doc.get("_id")
+                        if db_cid:
+                            try:
+                                db_cid_int = int(db_cid)
+                                clean_db_cid = int(str(db_cid).replace("-100", "").replace("-", ""))
+                            except Exception:
+                                db_cid_int = db_cid
+                                clean_db_cid = db_cid
+
+                            if db_cid_int not in live_channel_ids and clean_db_cid not in live_channel_ids:
+                                self.db_b.xDataChannels.delete_one({"_id": db_cid})
+                                ghost_purged_count += 1
+                except Exception as gb_err:
+                    logging.warning(f"[HEALTH SCAN] Error purging ghost mappings in DB B: {gb_err}")
+
+            if ghost_purged_count > 0:
+                logging.info(f"[HEALTH SCAN] Purged {ghost_purged_count} ghost channel records from MongoDB that do not exist in Telegram.")
+
+            # Step 3: Record completion in MongoDB
+            if self.db_a is not None:
+                try:
+                    self.db_a.system_meta.update_one(
+                        {"_id": "weekly_health_scan"},
+                        {"$set": {
+                            "last_run": datetime.now().isoformat(),
+                            "total_scanned": len(total_dialogs),
+                            "accessible_count": len(accessible_list),
+                            "banned_left_count": len(banned_left_list),
+                            "ghost_purged_count": ghost_purged_count,
+                            "updated_at": datetime.now()
+                        }},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+
+            # Step 4: Build & Send summary report to @ganeshmrxx
+            summary_text = (
+                f"🛡️ <b>[AllForward Weekly Health Scan Report]</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 <b>Date:</b> {datetime.now().strftime('%d %b %Y, %I:%M %p')}\n"
+                f"📊 <b>Total Channels Scanned in Telegram:</b> {len(total_dialogs)}\n"
+                f"✅ <b>Accessible & Active Channels:</b> {len(accessible_list)}\n"
+                f"🚫 <b>Banned Channels Left in Telegram:</b> {len(banned_left_list)}\n"
+                f"👻 <b>Ghost Channels Cleaned from MongoDB:</b> {ghost_purged_count}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+            )
+
+            if banned_left_list:
+                summary_text += "🗑️ <b>Removed Banned Channels:</b>\n"
+                for idx, b_item in enumerate(banned_left_list[:15], 1):
+                    summary_text += f"{idx}. <b>{b_item['title']}</b> (<code>{b_item['id']}</code>)\n"
+                if len(banned_left_list) > 15:
+                    summary_text += f"<i>...and {len(banned_left_list) - 15} more channels.</i>\n"
+            else:
+                summary_text += "✨ <i>Sabhi channels 100% active aur accessible hain. Koi dead channel nahi mila!</i>\n"
+
+            summary_text += f"\n🤖 <b>Status:</b> AllForward Universal Forwarder is running smoothly."
+
+            if notify_username:
+                target_user = notify_username.lstrip('@')
+                try:
+                    await client.send_message(target_user, summary_text, parse_mode=ChatType.HTML if hasattr(ChatType, 'HTML') else None)
+                    logging.info(f"[HEALTH SCAN] Summary report successfully sent to @{target_user}!")
+                except Exception as send_err:
+                    logging.warning(f"[HEALTH SCAN] Could not send report to @{target_user}: {send_err}")
+
+            self.health_scan_status.update({
+                "is_running": False,
+                "completed_at": datetime.now().isoformat(),
+                "current_chat": "Idle (Scan Complete)",
+                "last_summary": summary_text
+            })
+
+            return {
+                "success": True,
+                "total_scanned": len(total_dialogs),
+                "accessible_count": len(accessible_list),
+                "banned_left_count": len(banned_left_list),
+                "banned_channels": banned_left_list
+            }
+
+        except Exception as overall_e:
+            self.health_scan_status["is_running"] = False
+            self.health_scan_status["current_chat"] = f"Error: {overall_e}"
+            logging.error(f"[HEALTH SCAN FATAL] {overall_e}")
+            return {"success": False, "error": str(overall_e)}
+
+    async def set_channel_mapping(self, source_id: int, source_name: str, target_id: int, target_name: str, forward_history: bool = True, db_b = None) -> dict:
+        if db_b is None:
+            return {"error": "Database not connected"}
+        
+        doc = {
+            "_id": source_id,
+            "source_name": source_name,
+            "target": target_id,
+            "target_name": target_name,
+            "updated_at": datetime.now().isoformat()
+        }
+        db_b.xDataChannels.update_one({"_id": source_id}, {"$set": doc}, upsert=True)
+        # Invalidate dialogs cache so UI reflects immediately
+        self.dialogs_cache = []
+        self.dialogs_cache_time = 0
+
+        # Ensure backup_forwarder is running for live incoming messages
+        if not self.status["backup_forwarder"]["is_running"]:
+            asyncio.create_task(self.start_bot("backup_forwarder"))
+
+        job_info = None
+        if forward_history:
+            job_info = await self.start_bulk_forward_job(source_id=source_id, target_id=target_id)
+
+        return {
+            "success": True,
+            "mapping": {
+                "source_id": source_id,
+                "source_name": source_name,
+                "target_id": target_id,
+                "target_name": target_name
+            },
+            "job": job_info
+        }
+
+    async def add_channel_to_folder(self, folder_id: int, chat_id: int) -> dict:
+        bot_entry = self.bots.get("backup_forwarder")
+        client = bot_entry.get("instance") if bot_entry else None
+        if not client or not getattr(client, "is_connected", False):
+            return {"success": False, "error": "Backup Forwarder userbot is not connected"}
+
+        try:
+            filters = await client.invoke(GetDialogFilters())
+            target_filter = None
+            for f in filters:
+                if getattr(f, "id", None) == folder_id:
+                    target_filter = f
+                    break
+
+            if not target_filter:
+                return {"success": False, "error": f"Folder ID {folder_id} not found in Telegram"}
+
+            peer = await client.resolve_peer(chat_id)
+            include_peers = list(getattr(target_filter, "include_peers", []))
+            clean_target = int(str(chat_id).replace("-100", "").replace("-", ""))
+
+            already_there = False
+            for p in include_peers:
+                cid = getattr(p, "channel_id", getattr(p, "chat_id", None))
+                if cid and cid == clean_target:
+                    already_there = True
+                    break
+
+            if not already_there:
+                include_peers.append(peer)
+                target_filter.include_peers = include_peers
+                await client.invoke(UpdateDialogFilter(id=folder_id, filter=target_filter))
+
+            self.dialogs_cache = None
+            self.dialogs_cache_time = 0
+            self._dialog_filters_cache = None
+            self._dialog_filters_cache_time = 0
+            return {"success": True, "chat_id": chat_id, "folder_id": folder_id}
+        except Exception as e:
+            err = str(e).encode("ascii", errors="ignore").decode("ascii")
+            return {"success": False, "error": err}
+
+    async def remove_channel_from_folder(self, folder_id: int, chat_id: int) -> dict:
+        bot_entry = self.bots.get("backup_forwarder")
+        client = bot_entry.get("instance") if bot_entry else None
+        if not client or not getattr(client, "is_connected", False):
+            return {"success": False, "error": "Backup Forwarder userbot is not connected"}
+
+        try:
+            filters = await client.invoke(GetDialogFilters())
+            target_filter = None
+            for f in filters:
+                if getattr(f, "id", None) == folder_id:
+                    target_filter = f
+                    break
+
+            if not target_filter:
+                return {"success": False, "error": f"Folder ID {folder_id} not found in Telegram"}
+
+            clean_target = int(str(chat_id).replace("-100", "").replace("-", ""))
+            def peer_matches(peer) -> bool:
+                cid = getattr(peer, "channel_id", getattr(peer, "chat_id", getattr(peer, "user_id", None)))
+                return cid == clean_target or cid == chat_id
+
+            orig_include = getattr(target_filter, "include_peers", [])
+            new_include = [p for p in orig_include if not peer_matches(p)]
+            orig_pinned = getattr(target_filter, "pinned_peers", [])
+            new_pinned = [p for p in orig_pinned if not peer_matches(p)]
+
+            target_filter.include_peers = new_include
+            target_filter.pinned_peers = new_pinned
+            await client.invoke(UpdateDialogFilter(id=folder_id, filter=target_filter))
+
+            self.dialogs_cache = None
+            self.dialogs_cache_time = 0
+            self._dialog_filters_cache = None
+            self._dialog_filters_cache_time = 0
+            return {"success": True, "chat_id": chat_id, "folder_id": folder_id}
+        except Exception as e:
+            err = str(e).encode("ascii", errors="ignore").decode("ascii")
+            return {"success": False, "error": err}
+
+    async def clear_all_legacy_mappings(self, db_b = None) -> dict:
+        deleted = 0
+        if db_b is not None:
+            res = db_b.xDataChannels.delete_many({})
+            deleted = res.deleted_count
+        self.dialogs_cache = None
+        self.dialogs_cache_time = 0
+        return {"success": True, "deleted_count": deleted}
+
+    async def cleanup_telegram_folders_to_three(self) -> dict:
+        """Deletes all extra folders from Telegram and keeps ONLY videoDB, TeraDB, and public hub."""
+        bot_entry = self.bots.get("backup_forwarder")
+        client = bot_entry.get("instance") if bot_entry else None
+        if not client or not getattr(client, "is_connected", False):
+            if "backup_forwarder" in self.bots:
+                await self.start_bot("backup_forwarder")
+                await asyncio.sleep(2)
+                bot_entry = self.bots.get("backup_forwarder")
+                client = bot_entry.get("instance") if bot_entry else None
+            if not client:
+                return {"success": False, "error": "Backup Forwarder userbot is not connected"}
+
+        try:
+            filters = await client.invoke(GetDialogFilters())
+            kept = []
+            deleted = []
+
+            for f in filters:
+                fid = getattr(f, "id", None)
+                if fid is None:
+                    continue
+                ftitle = str(getattr(f, "title", "")).strip().lower()
+
+                # Allowed folders: videoDB (5), TeraDB (6), TARGEThub (4)
+                is_videodb = ("video" in ftitle and "db" in ftitle) or fid == 5
+                is_teradb = ("tera" in ftitle and "db" in ftitle) or fid == 6
+                is_targethub = "target" in ftitle or "public" in ftitle or "hub" in ftitle or fid == 4
+
+                if is_videodb or is_teradb or is_targethub:
+                    kept.append({"id": fid, "title": getattr(f, "title", "")})
+                else:
+                    # Extra folder -> delete from Telegram!
+                    try:
+                        await client.invoke(UpdateDialogFilter(id=fid, filter=None))
+                        deleted.append({"id": fid, "title": getattr(f, "title", "")})
+                        logging.info(f"Deleted extra Telegram folder: {getattr(f, 'title', '')} (ID: {fid})")
+                    except Exception as de:
+                        logging.warning(f"Error deleting extra folder {fid}: {de}")
+
+            # Ensure TARGEThub exists if not present
+            has_targethub = any("target" in k["title"].lower() or "hub" in k["title"].lower() or k["id"] == 4 for k in kept)
+            if not has_targethub:
+                pub_filter = DialogFilter(
+                    id=4,
+                    title="TARGEThub",
+                    emoticon="🎯",
+                    pinned_peers=[],
+                    include_peers=[],
+                    exclude_peers=[],
+                    exclude_muted=False,
+                    exclude_read=False,
+                    exclude_archived=False
+                )
+                try:
+                    await client.invoke(UpdateDialogFilter(id=4, filter=pub_filter))
+                    kept.append({"id": 4, "title": "TARGEThub"})
+                except Exception as ce:
+                    logging.warning(f"Error creating TARGEThub folder: {ce}")
+
+            self.dialogs_cache = None
+            self.dialogs_cache_time = 0
+            self._dialog_filters_cache = None
+            self._dialog_filters_cache_time = 0
+
+            return {
+                "success": True,
+                "kept_folders": kept,
+                "deleted_folders": deleted,
+                "message": f"Kept {len(kept)} folders (videoDB, TeraDB, public hub). Deleted {len(deleted)} extra folders."
+            }
+        except Exception as e:
+            err = str(e).encode("ascii", errors="ignore").decode("ascii")
+            return {"success": False, "error": err}
+
+
+
