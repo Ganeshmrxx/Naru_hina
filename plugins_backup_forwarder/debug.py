@@ -14,8 +14,9 @@ _folder_cache = {"time": 0, 5: set(), 6: set(), "admin_chats": set()}
 VIDEO_TARGET = -1004401442087   # DBXVideos
 TERA_TARGET  = -1004337870091   # DBXTera
 MIX_TARGET   = -1003253102275   # Mix (ignored)
-TARGET_CHANNELS = {VIDEO_TARGET, TERA_TARGET, MIX_TARGET,
-                   4401442087, 4337870091, 3253102275}
+LOG_TARGET   = -1003872228287   # Logchannel
+TARGET_CHANNELS = {VIDEO_TARGET, TERA_TARGET, MIX_TARGET, LOG_TARGET,
+                   4401442087, 4337870091, 3253102275, 3872228287}
 
 TERABOX_KEYWORDS = [
     "terabox", "tera box", "teraboxapp", "1024tera",
@@ -119,6 +120,20 @@ async def resolve_folder_target(client, incoming_id):
                                 clean_cid = int(str(cid).replace("-100", "").replace("-", ""))
                                 target_set.add(int(f"-100{clean_cid}"))
                                 target_set.add(clean_cid)
+                try:
+                    from pyrogram.raw.functions.messages import GetAllChats
+                    all_c = await asyncio.wait_for(client.invoke(GetAllChats(except_ids=[])), timeout=8.0)
+                    adm_chats = set()
+                    for c in getattr(all_c, "chats", []):
+                        if getattr(c, "creator", False) or getattr(c, "admin_rights", None) is not None:
+                            cl_c = int(str(c.id).replace("-100", "").replace("-", ""))
+                            adm_chats.add(c.id)
+                            adm_chats.add(int(f"-100{cl_c}"))
+                            adm_chats.add(cl_c)
+                    _folder_cache["admin_chats"] = adm_chats
+                except Exception as ae:
+                    print("Admin chat fetch error:", ae)
+
                 if f5 or f6:
                     _folder_cache[5] = f5
                     _folder_cache[6] = f6
@@ -428,7 +443,12 @@ async def auto_forward(client, message):
     if incoming_id in TARGET_CHANNELS or clean_inc in TARGET_CHANNELS:
         return
 
-    # CRITICAL GUARD 2: Target channels already checked. All other source channels are forwarded!
+    # CRITICAL GUARD 2: NEVER forward messages from channels where user is Admin / Owner / Creator!
+    admin_chats = _folder_cache.setdefault("admin_chats", set())
+    if incoming_id in admin_chats or clean_inc in admin_chats:
+        return
+    if "log" in str(source_title).lower():
+        return
     # CRITICAL GUARD 3: SKIP KNOWN RESTRICTED VIDEODB CHANNELS
     restricted_chats = _folder_cache.setdefault("restricted_chats", set())
     if incoming_id in restricted_chats or clean_inc in restricted_chats:

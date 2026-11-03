@@ -95,8 +95,9 @@ TERABOX_DOMAINS = [
 VIDEO_TARGET = -1004401442087   # DBXVideos
 TERA_TARGET  = -1004337870091   # DBXTera
 MIX_TARGET   = -1003253102275   # Mix (ignored)
-TARGET_CHANNELS = {VIDEO_TARGET, TERA_TARGET, MIX_TARGET,
-                   4401442087, 4337870091, 3253102275}
+LOG_TARGET   = -1003872228287   # Logchannel
+TARGET_CHANNELS = {VIDEO_TARGET, TERA_TARGET, MIX_TARGET, LOG_TARGET,
+                   4401442087, 4337870091, 3253102275, 3872228287}
 
 def is_terabox_content(msg):
     """Check if a Pyrogram message contains TeraBox links/references in caption, text, or inline buttons."""
@@ -878,6 +879,27 @@ class BotManager:
                 self.folder_sync_status[source_id] = {"status": "failed", "error": job["error"]}
                 return
 
+        # GUARD: Target and Admin/Owner channels must NEVER be used as a source!
+        clean_src = int(str(source_id).replace("-100", "").replace("-", ""))
+        if source_id in TARGET_CHANNELS or clean_src in TARGET_CHANNELS:
+            logging.warning(f"[BULK FORWARD] Source channel {source_id} is a TARGET/STORAGE channel. Skipping!")
+            job["status"] = "skipped"
+            job["error"] = "Target/storage channel cannot be synced"
+            self.folder_sync_status[source_id] = {"status": "skipped", "error": job["error"]}
+            return
+
+        try:
+            me_mem = await asyncio.wait_for(client.get_chat_member(source_id, "me"), timeout=5.0)
+            from pyrogram.enums import ChatMemberStatus
+            if me_mem.status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR):
+                logging.warning(f"[BULK FORWARD] Source channel {source_id} is user's OWN/ADMIN channel (status: {me_mem.status}). SKIPPING!")
+                job["status"] = "skipped"
+                job["error"] = "Skipped: User is Owner/Admin of this channel"
+                self.folder_sync_status[source_id] = {"status": "skipped", "error": job["error"]}
+                return
+        except Exception:
+            pass
+
         # Step 2: Determine if source channel is Public (has username) or Private, and fetch title
         source_username = None
         source_title = job.get("source_name") or str(source_id)
@@ -1231,11 +1253,17 @@ class BotManager:
                                             update_progress(msg.id)
                                             break
                                     else:
-                                        logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on album {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
-                                        channel_restricted = True
-                                        job["failed"] += 1
-                                        update_progress(msg.id)
-                                        break
+                                        if not auto_route:
+                                            logging.warning(f"[RESTRICTED CHANNEL] Telegram returned CHAT_FORWARDS_RESTRICTED on album {msg.id}: VideoDB Channel '{source_title}' ({source_id}) restricts content. Aborting VideoDB channel immediately to prevent FloodWait!")
+                                            channel_restricted = True
+                                            job["failed"] += 1
+                                            update_progress(msg.id)
+                                            break
+                                        else:
+                                            logging.warning(f"[RESTRICTED ALBUM] Album {group_id} in '{source_title}' ({source_id}) restricted from forwarding. Skipping album.")
+                                            job["skipped"] += 1
+                                            update_progress(msg.id)
+                                            break
                                 elif "FloodWait" in err_str:
                                     logging.warning(f"[FLOOD WAIT] Generic FloodWait in album: {err_str}. Sleeping 20s...")
                                     await asyncio.sleep(20)
@@ -1457,7 +1485,7 @@ class BotManager:
                     if channel_restricted and not is_teradb and not auto_route:
                         break
 
-                if channel_restricted and not is_teradb:
+                if channel_restricted and not is_teradb and not auto_route:
                     logging.warning(f"[RESTRICTED CHANNEL] VideoDB Channel '{source_title}' ({source_id}) marked as restricted in MongoDB. Skipping permanently.")
                     job["status"] = "restricted"
                     job["error"] = "CHAT_FORWARDS_RESTRICTED: Channel restricts forwarding content"
@@ -1589,6 +1617,9 @@ class BotManager:
                                 continue
                             # Skip admin/owned channels
                             if d.get("is_admin") or d.get("is_creator"):
+                                continue
+                            # Extra safety: skip any chat containing 'log'
+                            if "log" in str(d.get("title", "")).lower():
                                 continue
                             all_channels.append(d)
 
@@ -1884,6 +1915,21 @@ class BotManager:
                 except Exception as fe:
                     logging.warning(f"Could not fetch dialog filters: {fe}")
 
+                # Fetch all channels where user is Admin or Creator via raw GetAllChats
+                admin_channels = set()
+                try:
+                    all_chats_res = await client.invoke(raw.functions.messages.GetAllChats(except_ids=[]))
+                    for c in getattr(all_chats_res, "chats", []):
+                        is_c_owner = bool(getattr(c, "creator", False))
+                        c_admin_rights = getattr(c, "admin_rights", None)
+                        if is_c_owner or c_admin_rights is not None:
+                            clean_c = int(str(c.id).replace("-100", "").replace("-", ""))
+                            admin_channels.add(c.id)
+                            admin_channels.add(int(f"-100{clean_c}"))
+                            admin_channels.add(clean_c)
+                except Exception as ae:
+                    logging.warning(f"Could not fetch admin chats via GetAllChats: {ae}")
+
                 raw_dialogs = []
                 try:
                     async for d in client.get_dialogs():
@@ -1902,9 +1948,11 @@ class BotManager:
                     if not title:
                         title = f"Chat {chat.id}"
                     
-                    is_creator = bool(getattr(chat, "is_creator", False))
+                    clean_id = int(str(chat.id).replace("-100", "").replace("-", ""))
+                    is_owner_admin = (chat.id in admin_channels) or (clean_id in admin_channels) or (chat.id in TARGET_CHANNELS) or (clean_id in TARGET_CHANNELS)
+                    is_creator = bool(getattr(chat, "is_creator", False)) or is_owner_admin
                     admin_rights = getattr(chat, "admin_rights", None)
-                    is_admin = is_creator or (admin_rights is not None)
+                    is_admin = is_creator or (admin_rights is not None) or is_owner_admin
                     can_post = is_creator or (admin_rights is not None and getattr(admin_rights, "can_post_messages", True))
                     type_str = "channel" if chat.type == ChatType.CHANNEL else "group"
                     
