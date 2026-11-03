@@ -391,7 +391,7 @@ export default function BackupForwarderDetailPage() {
               100% Content-Based Automatic Forwarder & Smart Filter Engine Active
             </h4>
             <p className="text-[11px] text-gray-400 mt-0.5">
-              Channels in <strong className="text-blue-300">videoDB (Folder 5)</strong> auto-forward all past media & live posts to <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. Channels in <strong className="text-amber-300">TeraDB (Folder 6)</strong> auto-forward to <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Past messages are synced automatically in the background — no manual clicking needed!
+              ALL channels auto-forward by content: Single Videos & Albums ➔ <strong className="text-emerald-400">DBXVideos (-1004401442087)</strong>. TeraBox Posts & Links ➔ <strong className="text-amber-400">DBXTera (-1004337870091)</strong>. Single Photos & Plain Ads are auto-skipped. No Telegram folders required!
             </p>
           </div>
         </div>
@@ -1161,34 +1161,23 @@ export default function BackupForwarderDetailPage() {
                         </button>
                       </div>
                     ) : (
-                      /* Unassigned Channel: Quick 1-Click Assign to videoDB, TeraDB, or TARGEThub */
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[11px] text-gray-500 italic mr-1">Not in folder:</span>
-                        <button
-                          onClick={() => handleAssignFolder(channel.id, 5, 'videoDB')}
-                          disabled={isBusy}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600 text-blue-300 hover:text-white border border-blue-500/30 text-xs font-medium transition-colors disabled:opacity-50"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>+ videoDB</span>
-                        </button>
+                      /* 100% Content-Based Auto-Routing (No folder assignment required) */
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        <div className="bg-[#111827] border border-blue-500/40 rounded-lg px-3 py-1.5 text-xs text-left">
+                          <div className="flex items-center gap-1.5 text-blue-400 font-medium">
+                            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                            ⚡ Auto-Routed (Content-Based)
+                          </div>
+                          <div className="text-[11px] text-gray-400">Videos ➔ DBXVideos | TeraBox ➔ DBXTera</div>
+                        </div>
 
                         <button
-                          onClick={() => handleAssignFolder(channel.id, 6, 'TeraDB')}
-                          disabled={isBusy}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/30 text-xs font-medium transition-colors disabled:opacity-50"
+                          onClick={() => handleResync(channel.id, channel.title)}
+                          title="Re-forward all past messages"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors"
                         >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>+ TeraDB</span>
-                        </button>
-
-                        <button
-                          onClick={() => handleAssignFolder(channel.id, 4, 'TARGEThub')}
-                          disabled={isBusy}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-teal-600/20 hover:bg-teal-600 text-teal-300 hover:text-white border border-teal-500/30 text-xs font-medium transition-colors disabled:opacity-50"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>+ TARGEThub</span>
+                          <RotateCw className="w-3.5 h-3.5" />
+                          <span>Sync Past</span>
                         </button>
                       </div>
                     )}

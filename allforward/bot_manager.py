@@ -99,8 +99,14 @@ TARGET_CHANNELS = {VIDEO_TARGET, TERA_TARGET, MIX_TARGET,
                    4401442087, 4337870091, 3253102275}
 
 def is_terabox_content(msg):
-    """Check if a Pyrogram message contains TeraBox links/references in caption or text."""
+    """Check if a Pyrogram message contains TeraBox links/references in caption, text, or inline buttons."""
     text = ((getattr(msg, 'caption', None) or '') + ' ' + (getattr(msg, 'text', None) or '')).lower()
+    if getattr(msg, "reply_markup", None) and getattr(msg.reply_markup, "inline_keyboard", None):
+        for row in msg.reply_markup.inline_keyboard:
+            for btn in row:
+                btn_url = getattr(btn, "url", None)
+                if btn_url:
+                    text += " " + str(btn_url).lower()
     if not text.strip():
         return False
     for kw in TERABOX_KEYWORDS:
@@ -125,16 +131,12 @@ def is_video_message(msg):
     return False
 
 def get_auto_target(msg, chat_type_str="channel"):
-    """Determine target channel for a message based on exact user content rules:
-    1. Single Video (or video document) -> DBXVideos (-1004401442087)
-       (unless it has TeraBox link, then -> DBXTera)
-    2. Grouped Gallery (Albums: Photo + Video mix or photos/videos) -> DBXVideos (-1004401442087)
-       (unless it has TeraBox link, then -> DBXTera)
-    3. Single Photo:
-       - If contains TeraBox link -> DBXTera (-1004337870091)
-       - If NO TeraBox link -> None (SKIP permanently)
-    4. Text-only / Promo Ads / Plain text without media -> None (SKIP permanently)
-    5. Groups/Supergroups: Only videos allowed.
+    """Determine target channel for a message based on exact user content rules (NO folders required):
+    1. Albums / Grouped Gallery -> DBXVideos (-1004401442087) [or DBXTera if TeraBox link]
+    2. Single Video / Video Doc -> DBXVideos (-1004401442087) [or DBXTera if TeraBox link]
+    3. Single Photo: Only if TeraBox link -> DBXTera (-1004337870091), else SKIP
+    4. TeraBox Post (Text/Link/Media) -> DBXTera (-1004337870091)
+    5. Plain Text Ads / Single Photos without TeraBox -> SKIP
     """
     tera = is_terabox_content(msg)
     is_vid = is_video_message(msg)
@@ -145,8 +147,7 @@ def get_auto_target(msg, chat_type_str="channel"):
     # RULE 1: GROUPED GALLERY / ALBUMS
     if is_album:
         if tera:
-            return TERA_TARGET  # DBXTera if TeraBox link present
-        # Grouped gallery with pic+video or any album media goes to DBXVideos
+            return TERA_TARGET
         return VIDEO_TARGET
 
     # RULE 2: SINGLE VIDEO
@@ -156,11 +157,14 @@ def get_auto_target(msg, chat_type_str="channel"):
     # RULE 3: SINGLE PHOTO
     if is_photo:
         if is_group:
-            return None  # Skip all group photos
-        # Only photos with TeraBox links go to DBXTera, otherwise skip
+            return None
         return TERA_TARGET if tera else None
 
-    # RULE 4: Plain text / Promo ads without media -> SKIP
+    # RULE 4: TERABOX POST (Text link, photo, or buttons)
+    if tera:
+        return TERA_TARGET
+
+    # RULE 5: Plain text / Promo ads without media or TeraBox link -> SKIP
     return None
 
 
@@ -1592,22 +1596,23 @@ class BotManager:
                         channels_to_sync = []
                         for d in all_channels:
                             cid = d["id"]
-                            # Check in-memory status
+                            # Check in-memory status (only skip if actually copied messages)
                             sync_state = self.folder_sync_status.get(cid, {})
-                            if sync_state.get("status") in ["completed", "restricted"]:
+                            if sync_state.get("status") in ["completed", "restricted"] and sync_state.get("processed", 0) > 0:
                                 continue
-                            # Check MongoDB
+                            # Check MongoDB (only skip if actually copied messages > 0)
                             if self.db_a is not None:
                                 try:
                                     doc = self.db_a.forward_progress.find_one({"chat_id": cid})
                                     if doc and doc.get("status") in ["completed", "restricted"]:
-                                        self.folder_sync_status[cid] = {
-                                            "status": doc["status"],
-                                            "processed": doc.get("total_copied", 0),
-                                            "total": doc.get("total_messages", 0),
-                                            "last_msg_id": doc.get("last_msg_id", 0)
-                                        }
-                                        continue
+                                        if doc.get("total_copied", 0) > 0:
+                                            self.folder_sync_status[cid] = {
+                                                "status": doc["status"],
+                                                "processed": doc.get("total_copied", 0),
+                                                "total": doc.get("total_messages", 0),
+                                                "last_msg_id": doc.get("last_msg_id", 0)
+                                            }
+                                            continue
                                 except Exception:
                                     pass
                             # Check if already running/queued
@@ -1923,11 +1928,12 @@ class BotManager:
                         target_name = "TARGEThub"
                         is_mapped = True
                     else:
-                        folder_id = None
-                        folder_name = None
-                        target_id = None
-                        target_name = None
-                        is_mapped = False
+                        # 100% Content-Based Auto Routing (All channels active, NO folders needed)
+                        folder_id = 0
+                        folder_name = "Auto Content Router"
+                        target_id = 0
+                        target_name = "DBXVideos / DBXTera"
+                        is_mapped = True
 
                     self.chat_info_cache[chat.id] = {
                         "title": title,

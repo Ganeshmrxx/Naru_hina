@@ -30,6 +30,12 @@ TERABOX_DOMAINS = [
 
 def is_terabox_content(msg):
     text = ((getattr(msg, 'caption', None) or '') + ' ' + (getattr(msg, 'text', None) or '')).lower()
+    if getattr(msg, "reply_markup", None) and getattr(msg.reply_markup, "inline_keyboard", None):
+        for row in msg.reply_markup.inline_keyboard:
+            for btn in row:
+                btn_url = getattr(btn, "url", None)
+                if btn_url:
+                    text += " " + str(btn_url).lower()
     if not text.strip():
         return False
     for kw in TERABOX_KEYWORDS:
@@ -41,23 +47,24 @@ def is_terabox_content(msg):
     return False
 
 def is_video_message(msg):
-    if msg.video:
+    if getattr(msg, "video", None):
         return True
-    if msg.document and getattr(msg.document, 'mime_type', '').startswith('video/'):
-        return True
+    if getattr(msg, "document", None):
+        mime = (getattr(msg.document, "mime_type", "") or "").lower()
+        if mime.startswith("video/"):
+            return True
+        fname = (getattr(msg.document, "file_name", "") or "").lower()
+        if any(fname.endswith(ext) for ext in (".mp4", ".mkv", ".mov", ".avi", ".webm", ".ts", ".flv", ".m4v", ".wmv")):
+            return True
     return False
 
 def get_live_auto_target(msg):
-    """Determine live auto target based on exact user rules:
-    1. Single Video (or video document) -> DBXVideos (-1004401442087)
-       (unless it has TeraBox link, then -> DBXTera)
-    2. Grouped Gallery (Albums: Photo + Video mix or photos/videos) -> DBXVideos (-1004401442087)
-       (unless it has TeraBox link, then -> DBXTera)
-    3. Single Photo:
-       - If contains TeraBox link -> DBXTera (-1004337870091)
-       - If NO TeraBox link -> None, None (SKIP permanently)
-    4. Text-only / Promo Ads / Plain text without media -> None, None (SKIP permanently)
-    5. Groups/Supergroups: Only videos allowed.
+    """Determine live auto target based on exact user rules (NO folders required):
+    1. Albums / Grouped Gallery -> DBXVideos (-1004401442087) [or DBXTera if TeraBox link]
+    2. Single Video / Video Doc -> DBXVideos (-1004401442087) [or DBXTera if TeraBox link]
+    3. Single Photo: Only if TeraBox link -> DBXTera (-1004337870091), else SKIP
+    4. TeraBox Post (Text/Link/Media) -> DBXTera (-1004337870091)
+    5. Plain Text Ads / Single Photos without TeraBox -> SKIP
     """
     is_group = msg.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
     tera = is_terabox_content(msg)
@@ -69,7 +76,6 @@ def get_live_auto_target(msg):
     if is_album:
         if tera:
             return TERA_TARGET, "DBXTera"
-        # Grouped gallery with pic+video or any album media goes to DBXVideos
         return VIDEO_TARGET, "DBXVideos"
 
     # RULE 2: SINGLE VIDEO
@@ -82,7 +88,11 @@ def get_live_auto_target(msg):
             return None, None
         return (TERA_TARGET, "DBXTera") if tera else (None, None)
 
-    # RULE 4: Plain text / Promo ads without media -> SKIP
+    # RULE 4: TERABOX POST (Text link, photo, or buttons)
+    if tera:
+        return TERA_TARGET, "DBXTera"
+
+    # RULE 5: Plain text / Promo ads without media or TeraBox link -> SKIP
     return None, None
 
 async def resolve_folder_target(client, incoming_id):
@@ -418,20 +428,7 @@ async def auto_forward(client, message):
     if incoming_id in TARGET_CHANNELS or clean_inc in TARGET_CHANNELS:
         return
 
-    # CRITICAL GUARD 2: SKIP ADMIN / CREATOR CHANNELS
-    # Check cached admin status or resolve via chat permissions
-    admin_chats = _folder_cache.setdefault("admin_chats", set())
-    if incoming_id in admin_chats or clean_inc in admin_chats:
-        return
-
-    chat = message.chat
-    is_creator = bool(getattr(chat, "is_creator", False))
-    admin_rights = getattr(chat, "admin_rights", None)
-    if is_creator or (admin_rights is not None):
-        admin_chats.add(incoming_id)
-        admin_chats.add(clean_inc)
-        return
-
+    # CRITICAL GUARD 2: Target channels already checked. All other source channels are forwarded!
     # CRITICAL GUARD 3: SKIP KNOWN RESTRICTED VIDEODB CHANNELS
     restricted_chats = _folder_cache.setdefault("restricted_chats", set())
     if incoming_id in restricted_chats or clean_inc in restricted_chats:
@@ -521,7 +518,7 @@ async def auto_forward(client, message):
         media_type = "video"
         duration = message.video.duration
         size = message.video.file_size
-    elif message.document and getattr(message.document, 'mime_type', '').startswith('video/'):
+    elif message.document and is_video_message(message):
         file_id = message.document.file_unique_id
         media_type = "video"
         duration = 0
@@ -531,6 +528,15 @@ async def auto_forward(client, message):
         media_type = "photo"
         duration = 0
         size = message.photo.file_size
+    elif is_terabox_content(message):
+        # Text-only TeraBox post
+        caption = build_caption(message.text or message.caption, incoming_id, source_title or str(incoming_id), username=source_username)
+        try:
+            await client.send_message(chat_id=target, text=caption, disable_web_page_preview=False)
+            print(f"✔ Sent TeraBox post to {target}")
+        except Exception as te:
+            print(f"❌ Error sending TeraBox post: {te}")
+        return
     else:
         return
 
